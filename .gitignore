@@ -1,0 +1,15 @@
+# Build artifacts
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj
+
+# Generated app bundles & icons (produced by build_app.sh / make_icon.swift)
+*.app/
+AppIcon.iconset/
+RestoreIcon.iconset/
+AppIcon.icns
+RestoreIcon.icns
+
+# macOS
+.DS_Store
