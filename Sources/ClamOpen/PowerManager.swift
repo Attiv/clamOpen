@@ -50,8 +50,8 @@ final class PowerManager {
             for line in output.components(separatedBy: .newlines) {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.hasPrefix(setting.key) {
-                    // 格式：tcpkeepalive 0
-                    let parts = trimmed.split(separator: " ", maxSplits: 1)
+                    // 格式：tcpkeepalive         0 (可能有多个空格)
+                    let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true)
                     if parts.count >= 2 {
                         return String(parts[1])
                     }
