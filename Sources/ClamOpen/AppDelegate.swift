@@ -3,6 +3,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let controller = DisplayController()
+    private let powerManager = PowerManager()
     private var statusItem: NSStatusItem!
 
     /// 当前“意图”：用户或自动逻辑希望内置屏保持关闭
@@ -89,6 +90,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() {
         if intentDisabled { controller.enableBuiltin() }
         NSApp.terminate(nil)
+    }
+
+    @objc private func showPowerSettings() {
+        let summary = powerManager.getPowerSettingsSummary()
+        let needsOpt = powerManager.needsOptimization()
+
+        let a = NSAlert()
+        a.messageText = "电源管理 —— 防止休眠耗电"
+        a.informativeText = """
+        \(summary)
+
+        \(needsOpt ? "\n⚠️ 检测到可能导致夜间耗电的设置。" : "\n✓ 当前设置已优化。")
+
+        问题说明：
+        TCP 保活会导致 Mac 在休眠时每分钟唤醒一次维护网络连接，
+        造成电池在夜间快速耗尽。
+
+        建议操作：
+        • 禁用 TCP 保活、网络唤醒、靠近唤醒
+        • 调整待机延迟为 1 小时（更省电）
+
+        不影响正常使用：
+        打开盖子、按键盘、点触控板等正常唤醒方式不受影响。
+        """
+
+        if needsOpt {
+            a.addButton(withTitle: "应用省电设置（需管理员权限）")
+            a.addButton(withTitle: "取消")
+        } else {
+            a.addButton(withTitle: "恢复默认设置")
+            a.addButton(withTitle: "关闭")
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = a.runModal()
+
+        if response == .alertFirstButtonReturn {
+            applyPowerOptimization(restore: !needsOpt)
+        }
+    }
+
+    private func applyPowerOptimization(restore: Bool) {
+        let result = restore ? powerManager.restoreDefaultSettings() : powerManager.applyPowerSavingSettings()
+
+        let a = NSAlert()
+        a.messageText = result.success ? "设置成功" : "设置失败"
+        a.informativeText = result.message
+
+        if result.success && !restore {
+            a.informativeText += """
+
+
+            已应用的优化：
+            • TCP 保活：已禁用
+            • 网络唤醒：已禁用
+            • 靠近唤醒：已禁用
+            • 待机延迟：1 小时（电池模式）
+
+            明天早上可以检查效果：
+            打开终端，运行以下命令查看昨晚的唤醒情况：
+            pmset -g log | grep -E "DarkWake" | tail -20
+            """
+        }
+
+        a.addButton(withTitle: "好")
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
+
+        // 刷新菜单（更新电源设置状态）
+        rebuildMenu()
     }
 
     // MARK: - 自动模式 & 安全恢复
@@ -211,6 +282,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         auto.target = self
         auto.state = autoMode ? .on : .off
         menu.addItem(auto)
+
+        menu.addItem(.separator())
+
+        // —— 电源管理 ——
+        let needsOpt = powerManager.needsOptimization()
+        let powerTitle = needsOpt ? "⚠️ 电源管理（夜间耗电优化）" : "电源管理"
+        let powerItem = NSMenuItem(title: powerTitle, action: #selector(showPowerSettings), keyEquivalent: "")
+        powerItem.target = self
+        menu.addItem(powerItem)
 
         menu.addItem(.separator())
 

@@ -33,6 +33,7 @@ macOS only powers down the internal panel in *clamshell* mode (lid closed). If y
 
 - 🖥️ One click to turn the internal display off / on from the menu bar
 - 🤖 **Auto mode** — disable the internal display when an external one is connected, restore it when unplugged
+- 🔋 **Power management** — one-click optimization of sleep settings to prevent frequent wake-ups at night (disables TCP Keep Alive, network wake, etc.)
 - 🛟 **Crash-proof recovery** — a standalone *Restore* app brings the internal display back even if the main app dies (works while the screen is black, via Spotlight)
 - 🔒 **Safety first** — refuses to turn the internal display off when no external display is present; auto-restores on unplug / quit
 - 🪶 Menu-bar only (no Dock icon), no background daemon, no permanent system changes
@@ -124,14 +125,45 @@ Launch at login: System Settings → General → Login Items → add `ClamOpen.a
 
 ## Usage
 
+### Display Control
+
 1. Connect an external display.
 2. Click the menu-bar icon → **Turn off the internal display**.
 3. To bring it back → **Restore the internal display**, or enable **Auto** mode.
 
+### Power Management (Prevent Night-time Battery Drain)
+
+**Problem**: MacBook drains battery overnight while sleeping.
+
+**Cause**: macOS enables TCP Keep Alive by default, which wakes the system every minute to maintain network connections, causing rapid battery drain.
+
+**Solution**:
+
+1. Click the menu-bar icon → **Power Management** (shows ⚠️ if issues detected)
+2. Review current power settings
+3. Click **Apply Power Saving Settings**, enter admin password
+4. The following will be disabled:
+   - TCP Keep Alive (prevents frequent wake-ups)
+   - Wake on Magic Packet (network wake)
+   - Proximity Wake
+   - Adjust standby delay to 1 hour
+
+**Normal use unaffected**: Opening the lid, pressing keys, or clicking the trackpad still wakes the Mac normally.
+
+**Verify results**: Next morning, run in Terminal:
+```bash
+pmset -g log | grep -E "DarkWake" | tail -20
+```
+to check if night-time wake-ups have decreased significantly.
+
 ## Project structure
 
 ```
-Sources/ClamOpen/      Menu-bar app (DisplayController, AppDelegate, main)
+Sources/ClamOpen/      Menu-bar app
+  ├── DisplayController.swift   Display control (private API calls)
+  ├── PowerManager.swift         Power management (sleep optimization)
+  ├── AppDelegate.swift          Main app logic
+  └── main.swift
 Sources/ClamRestore/   Standalone emergency restore tool
 make_icon.swift        Programmatic icon generator
 build_app.sh           Build + package both .apps
