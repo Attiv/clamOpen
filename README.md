@@ -22,6 +22,15 @@
 </p>
 
 ---
+---
+> **📢 Fork Notes**
+>
+> I'm not a developer — just a regular user on a **2017 Intel MacBook Pro running macOS 12.7.6**. The original version didn't work on my machine, so I fixed it step by step with the help of Codex (an AI coding assistant). Now it works perfectly on my setup.
+>
+> Huge thanks to [@Attiv](https://github.com/Attiv) for open-sourcing this! If the original version doesn't work for you either, give this fork a try. I can't help with other technical issues though — I'm just a user who got lucky with AI.
+>
+> **Tested on:** macOS 12.7.6 · Intel MacBook Pro (2017) · External display via Thunderbolt
+>
 
 ClamOpen is a tiny menu-bar app that **truly turns off your MacBook's built-in display** (backlight off, the compositor stops rendering to it) while an external monitor is connected — **with the lid open**. The result is identical to clamshell mode, except you keep the webcam, Touch ID, the keyboard, and better airflow.
 
