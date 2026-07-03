@@ -1,10 +1,18 @@
 #!/bin/bash
-# 构建 ClamOpen.app（主程序）与 恢复内置屏.app（独立急救工具），并附带图标。
+# Build ClamOpen.app and 恢复内置屏.app using swiftc directly.
+# (swift build via SPM is broken on this machine due to
+#  a corrupted CommandLineTools installation — PackageDescription
+#  module is missing. Use `xcode-select --install` to fix.)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+SDK="$(xcrun --show-sdk-path)"
+TARGET="x86_64-apple-macos12.0"
+BUILD_DIR="$ROOT/.build/release"
 
-# 1) 生成图标（缺失时）
+mkdir -p "$BUILD_DIR"
+
+# ---- icons ----
 if [[ ! -f "$ROOT/AppIcon.icns" || ! -f "$ROOT/RestoreIcon.icns" ]]; then
   echo "==> Generating icons ..."
   swift "$ROOT/make_icon.swift" "$ROOT"
@@ -12,18 +20,29 @@ if [[ ! -f "$ROOT/AppIcon.icns" || ! -f "$ROOT/RestoreIcon.icns" ]]; then
   iconutil -c icns "$ROOT/RestoreIcon.iconset" -o "$ROOT/RestoreIcon.icns"
 fi
 
-# 2) 编译
-echo "==> Building release binaries ..."
-swift build --package-path "$ROOT" -c release
-BIN_DIR="$(swift build --package-path "$ROOT" -c release --show-bin-path)"
+# ---- compile ----
+echo "==> Building ClamOpen ..."
+swiftc -sdk "$SDK" -target "$TARGET" -O \
+  -framework AppKit -framework CoreGraphics \
+  -o "$BUILD_DIR/ClamOpen" \
+  "$ROOT/Sources/ClamOpen/main.swift" \
+  "$ROOT/Sources/ClamOpen/DisplayController.swift" \
+  "$ROOT/Sources/ClamOpen/AppDelegate.swift" \
+  "$ROOT/Sources/ClamOpen/PowerManager.swift"
 
-# 3) 组装 .app
+echo "==> Building ClamRestore ..."
+swiftc -sdk "$SDK" -target "$TARGET" -O \
+  -framework CoreGraphics -framework Foundation \
+  -o "$BUILD_DIR/ClamRestore" \
+  "$ROOT/Sources/ClamRestore/main.swift"
+
+# ---- assemble .app ----
 make_app() {
   local exe="$1" appname="$2" plist="$3" icns="$4"
   local app="$ROOT/$appname.app"
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  cp "$BIN_DIR/$exe" "$app/Contents/MacOS/$exe"
+  cp "$BUILD_DIR/$exe" "$app/Contents/MacOS/$exe"
   cp "$plist" "$app/Contents/Info.plist"
   [[ -f "$ROOT/$icns" ]] && cp "$ROOT/$icns" "$app/Contents/Resources/$icns"
   codesign --force --sign - "$app" >/dev/null 2>&1 || echo "  (codesign skipped: $appname)"

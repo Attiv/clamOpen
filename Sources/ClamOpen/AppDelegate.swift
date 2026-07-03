@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -16,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var watchdog: Timer?
 
+    private var enableLock = false
     /// CoreGraphics 显示重配置回调（拔插显示器时即时触发，比 NSNotification 更底层、更早）。
     /// 闭包不捕获 self，AppDelegate 通过 userInfo 指针传入。
     private let reconfigCallback: CGDisplayReconfigurationCallBack = { _, flags, userInfo in
@@ -44,6 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CGDisplayRegisterReconfigurationCallback(
             reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
 
+        // 监听分布式通知：恢复内置屏.app 发送的通知，触发恢复内置屏
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(handleRestoreNotification),
+            name: NSNotification.Name("com.clamopen.restore-builtin"),
+            object: nil)
+
         startWatchdog()
         rebuildMenu()
         updateIcon()
@@ -60,6 +68,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if intentDisabled { controller.enableBuiltin() }
     }
 
+
+    @objc private func handleRestoreNotification() {
+        print("[ClamOpen] Received restore notification")
+        if intentDisabled {
+            enable()
+        }
+    }
     // MARK: - 动作
 
     @objc private func disable() {
@@ -76,8 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func enable() {
-        controller.enableBuiltin()
+        enableLock = true
         intentDisabled = false
+        controller.enableBuiltin()
+        enableLock = false
         refresh()
     }
 
