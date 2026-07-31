@@ -99,6 +99,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func enable() {
+        if autoMode {
+            autoMode.toggle()
+        }
         controller.enableBuiltin()
         intentDisabled = false
         refresh()
