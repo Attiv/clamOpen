@@ -14,6 +14,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         didSet { UserDefaults.standard.set(autoMode, forKey: "autoMode") }
     }
 
+    /// 看门狗：定期检查显示器状态，提供兜底保护
+    private var watchdogEnabled = false {
+        didSet {
+            UserDefaults.standard.set(watchdogEnabled, forKey: "watchdogEnabled")
+            if watchdogEnabled {
+                startWatchdog()
+            } else {
+                stopWatchdog()
+            }
+        }
+    }
+
     private var watchdog: Timer?
 
     /// CoreGraphics 显示重配置回调（拔插显示器时即时触发，比 NSNotification 更底层、更早）。
@@ -38,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)  // 仅菜单栏，无 Dock 图标
         autoMode = UserDefaults.standard.bool(forKey: "autoMode")
+        watchdogEnabled = UserDefaults.standard.bool(forKey: "watchdogEnabled")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
@@ -52,7 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CGDisplayRegisterReconfigurationCallback(
             reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
 
-        // startWatchdog()
+        if watchdogEnabled {
+            startWatchdog()
+        }
         rebuildMenu()
         updateIcon()
 
@@ -93,6 +108,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoMode.toggle()
         if autoMode { evaluateAuto() }
         refresh()
+    }
+
+    @objc private func toggleWatchdog() {
+        watchdogEnabled.toggle()
+        rebuildMenu()
     }
 
     @objc private func quit() {
@@ -237,6 +257,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watchdog = t
     }
 
+    private func stopWatchdog() {
+        watchdog?.invalidate()
+        watchdog = nil
+    }
+
     // MARK: - UI
 
     private func refresh() {
@@ -308,6 +333,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         auto.target = self
         auto.state = autoMode ? .on : .off
         menu.addItem(auto)
+
+        menu.addItem(.separator())
+
+        // —— 看门狗 ——
+        let watchdogItem = NSMenuItem(
+            title: "看门狗（兜底保护）",
+            action: #selector(toggleWatchdog),
+            keyEquivalent: "")
+        watchdogItem.target = self
+        watchdogItem.state = watchdogEnabled ? .on : .off
+        menu.addItem(watchdogItem)
 
         menu.addItem(.separator())
 
