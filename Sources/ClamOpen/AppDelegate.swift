@@ -14,22 +14,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         didSet { UserDefaults.standard.set(autoMode, forKey: "autoMode") }
     }
 
+    /// 看门狗：定期检查显示器状态，提供兜底保护
+    private var watchdogEnabled = false {
+        didSet {
+            UserDefaults.standard.set(watchdogEnabled, forKey: "watchdogEnabled")
+            if watchdogEnabled {
+                startWatchdog()
+            } else {
+                stopWatchdog()
+            }
+        }
+    }
+
     private var watchdog: Timer?
 
     /// CoreGraphics 显示重配置回调（拔插显示器时即时触发，比 NSNotification 更底层、更早）。
     /// 闭包不捕获 self，AppDelegate 通过 userInfo 指针传入。
     private let reconfigCallback: CGDisplayReconfigurationCallBack = { _, flags, userInfo in
         guard let userInfo else { return }
-        if flags.contains(.beginConfigurationFlag) { return }   // 配置开始阶段状态未稳定，跳过
+        if flags.contains(.beginConfigurationFlag) { return }  // 配置开始阶段状态未稳定，跳过
         let delegate = Unmanaged<AppDelegate>.fromOpaque(userInfo).takeUnretainedValue()
+
+        // 检测到显示器移除时立即进行紧急检查
+        // if flags.contains(.removeFlag) {
+        //     DispatchQueue.main.async {
+        //         delegate.enforceSafety()
+        //     }
+        // }
+
         DispatchQueue.main.async { delegate.enforceSafety() }
     }
 
     // MARK: - 生命周期
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)   // 仅菜单栏，无 Dock 图标
+        NSApp.setActivationPolicy(.accessory)  // 仅菜单栏，无 Dock 图标
         autoMode = UserDefaults.standard.bool(forKey: "autoMode")
+        watchdogEnabled = UserDefaults.standard.bool(forKey: "watchdogEnabled")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
@@ -44,7 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CGDisplayRegisterReconfigurationCallback(
             reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
 
-        startWatchdog()
+        if watchdogEnabled {
+            startWatchdog()
+        }
         rebuildMenu()
         updateIcon()
 
@@ -76,6 +99,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func enable() {
+        if autoMode {
+            autoMode.toggle()
+        }
         controller.enableBuiltin()
         intentDisabled = false
         refresh()
@@ -83,8 +109,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleAuto() {
         autoMode.toggle()
-        if autoMode { evaluateAuto() }
+        if autoMode {
+            evaluateAuto()
+        } else {
+            controller.enableBuiltin()
+            intentDisabled = false
+        }
         refresh()
+    }
+
+    @objc private func toggleWatchdog() {
+        watchdogEnabled.toggle()
+        rebuildMenu()
     }
 
     @objc private func quit() {
@@ -99,21 +135,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let a = NSAlert()
         a.messageText = "电源管理 —— 防止休眠耗电"
         a.informativeText = """
-        \(summary)
+            \(summary)
 
-        \(needsOpt ? "\n⚠️ 检测到可能导致夜间耗电的设置。" : "\n✓ 当前设置已优化。")
+            \(needsOpt ? "\n⚠️ 检测到可能导致夜间耗电的设置。" : "\n✓ 当前设置已优化。")
 
-        问题说明：
-        TCP 保活会导致 Mac 在休眠时每分钟唤醒一次维护网络连接，
-        造成电池在夜间快速耗尽。
+            问题说明：
+            TCP 保活会导致 Mac 在休眠时每分钟唤醒一次维护网络连接，
+            造成电池在夜间快速耗尽。
 
-        建议操作：
-        • 禁用 TCP 保活、网络唤醒、靠近唤醒
-        • 调整待机延迟为 1 小时（更省电）
+            建议操作：
+            • 禁用 TCP 保活、网络唤醒、靠近唤醒
+            • 调整待机延迟为 1 小时（更省电）
 
-        不影响正常使用：
-        打开盖子、按键盘、点触控板等正常唤醒方式不受影响。
-        """
+            不影响正常使用：
+            打开盖子、按键盘、点触控板等正常唤醒方式不受影响。
+            """
 
         if needsOpt {
             a.addButton(withTitle: "应用省电设置（需管理员权限）")
@@ -132,7 +168,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyPowerOptimization(restore: Bool) {
-        let result = restore ? powerManager.restoreDefaultSettings() : powerManager.applyPowerSavingSettings()
+        let result =
+            restore
+            ? powerManager.restoreDefaultSettings() : powerManager.applyPowerSavingSettings()
 
         let a = NSAlert()
         a.messageText = result.success ? "设置成功" : "设置失败"
@@ -142,16 +180,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             a.informativeText += """
 
 
-            已应用的优化：
-            • TCP 保活：已禁用
-            • 网络唤醒：已禁用
-            • 靠近唤醒：已禁用
-            • 待机延迟：1 小时（电池模式）
+                已应用的优化：
+                • TCP 保活：已禁用
+                • 网络唤醒：已禁用
+                • 靠近唤醒：已禁用
+                • 待机延迟：1 小时（电池模式）
 
-            明天早上可以检查效果：
-            打开终端，运行以下命令查看昨晚的唤醒情况：
-            pmset -g log | grep -E "DarkWake" | tail -20
-            """
+                明天早上可以检查效果：
+                打开终端，运行以下命令查看昨晚的唤醒情况：
+                pmset -g log | grep -E "DarkWake" | tail -20
+                """
         }
 
         a.addButton(withTitle: "好")
@@ -197,24 +235,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
             guard let self else { return }
 
+            let hasExt = self.controller.hasExternalDisplay()
+            let builtinActive = self.controller.isBuiltinActive()
             // 1) 安全恢复：意图关闭却已无外接
-            if self.intentDisabled && !self.controller.hasExternalDisplay() {
+            if self.intentDisabled && !hasExt {
                 self.controller.enableBuiltin()
                 self.intentDisabled = false
                 self.refresh()
                 return
             }
             // 2) Intel 偶发唤醒：意图关闭但内置又被点亮 → 重新关闭
-            if self.intentDisabled && self.controller.hasExternalDisplay()
-                && self.controller.isBuiltinActive() {
+            if self.intentDisabled && hasExt && builtinActive {
                 self.controller.disableBuiltin()
                 self.updateIcon()
             }
             // 3) 自动模式常态评估
-            if self.autoMode { self.evaluateAuto() }
+            if self.autoMode {
+                if hasExt {
+                    if builtinActive, self.controller.disableBuiltin() == .ok {
+                        self.intentDisabled = true
+                    }
+                } else if self.intentDisabled || !builtinActive {
+                    self.controller.enableBuiltin()
+                    self.intentDisabled = false
+                }
+            }
         }
         RunLoop.main.add(t, forMode: .common)
         watchdog = t
+    }
+
+    private func stopWatchdog() {
+        watchdog?.invalidate()
+        watchdog = nil
     }
 
     // MARK: - UI
@@ -254,22 +307,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusText = "内置屏：开启中"
         }
         addInfo(menu, statusText)
-        addInfo(menu, hasExt ? "外接显示器：\(controller.externalDisplays().count) 台已连接"
-                             : "外接显示器：未连接")
+        addInfo(
+            menu,
+            hasExt
+                ? "外接显示器：\(controller.externalDisplays().count) 台已连接"
+                : "外接显示器：未连接")
 
         menu.addItem(.separator())
 
         // —— 主开关 ——
         if builtinActive {
-            let item = NSMenuItem(title: "关闭内置屏（只用外接）",
-                                  action: #selector(disable), keyEquivalent: "d")
+            let item = NSMenuItem(
+                title: "关闭内置屏（只用外接）",
+                action: #selector(disable), keyEquivalent: "d")
             item.target = self
             item.isEnabled = hasExt && controller.isAPIAvailable
             if !hasExt { item.toolTip = "需要先连接外接显示器" }
             menu.addItem(item)
         } else {
-            let item = NSMenuItem(title: "恢复内置屏",
-                                  action: #selector(enable), keyEquivalent: "e")
+            let item = NSMenuItem(
+                title: "恢复内置屏",
+                action: #selector(enable), keyEquivalent: "e")
             item.target = self
             menu.addItem(item)
         }
@@ -277,18 +335,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         // —— 自动模式 ——
-        let auto = NSMenuItem(title: "自动：接外接关、拔掉恢复",
-                              action: #selector(toggleAuto), keyEquivalent: "")
+        let auto = NSMenuItem(
+            title: "自动：接外接关、拔掉恢复",
+            action: #selector(toggleAuto), keyEquivalent: "")
         auto.target = self
         auto.state = autoMode ? .on : .off
         menu.addItem(auto)
 
         menu.addItem(.separator())
 
+        // —— 看门狗 ——
+        let watchdogItem = NSMenuItem(
+            title: "看门狗（兜底保护）",
+            action: #selector(toggleWatchdog),
+            keyEquivalent: "")
+        watchdogItem.target = self
+        watchdogItem.state = watchdogEnabled ? .on : .off
+        menu.addItem(watchdogItem)
+
+        menu.addItem(.separator())
+
         // —— 电源管理 ——
         let needsOpt = powerManager.needsOptimization()
         let powerTitle = needsOpt ? "⚠️ 电源管理（夜间耗电优化）" : "电源管理"
-        let powerItem = NSMenuItem(title: powerTitle, action: #selector(showPowerSettings), keyEquivalent: "")
+        let powerItem = NSMenuItem(
+            title: powerTitle, action: #selector(showPowerSettings), keyEquivalent: "")
         powerItem.target = self
         menu.addItem(powerItem)
 
@@ -299,8 +370,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         about.target = self
         menu.addItem(about)
 
-        let quitItem = NSMenuItem(title: "退出（自动恢复内置屏）",
-                                  action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(
+            title: "退出（自动恢复内置屏）",
+            action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
     }
@@ -315,19 +387,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let a = NSAlert()
         a.messageText = "ClamOpen — 开盖合盖"
         a.informativeText = """
-        盖子开着也能只用外接显示器（等效合盖）。
+            盖子开着也能只用外接显示器（等效合盖）。
 
-        原理：调用 CoreGraphics 私有接口 CGSConfigureDisplayEnabled，
-        关闭内置面板的渲染与背光。
+            原理：调用 CoreGraphics 私有接口 CGSConfigureDisplayEnabled，
+            关闭内置面板的渲染与背光。
 
-        安全保障：
-        • 没有外接显示器时不会关闭内置屏
-        • 拔掉外接显示器会自动恢复内置屏
-        • 退出本 App 会自动恢复内置屏
+            安全保障：
+            • 没有外接显示器时不会关闭内置屏
+            • 拔掉外接显示器会自动恢复内置屏
+            • 退出本 App 会自动恢复内置屏
 
-        万一屏幕异常 / 全黑：
-        拔掉外接显示器，或注销、重启 Mac 即可恢复（设置只在本次登录会话生效）。
-        """
+            万一屏幕异常 / 全黑：
+            拔掉外接显示器，或注销、重启 Mac 即可恢复（设置只在本次登录会话生效）。
+            """
         a.addButton(withTitle: "好")
         NSApp.activate(ignoringOtherApps: true)
         a.runModal()

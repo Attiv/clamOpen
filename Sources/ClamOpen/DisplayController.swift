@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -11,7 +12,17 @@ final class DisplayController {
     typealias ConfigureDisplayEnabledFn =
         @convention(c) (CGDisplayConfigRef?, CGDirectDisplayID, Bool) -> CGError
 
+    /// CGError CGSGetDisplayList(UInt32, CGDirectDisplayID*, UInt32*)
+    typealias GetDisplayListFn =
+        @convention(c) (
+            UInt32, UnsafeMutablePointer<CGDirectDisplayID>?, UnsafeMutablePointer<UInt32>?
+        ) -> CGError
+
     private let configureEnabled: ConfigureDisplayEnabledFn?
+    private let getDisplayList: GetDisplayListFn?
+
+    private var cachedBuiltinDisplayID: CGDirectDisplayID?
+    private let builtinIDKey = "BuiltinDisplayID"
 
     init() {
         // RTLD_DEFAULT (== -2)：符号随 CoreGraphics 已载入本进程，直接取即可
@@ -20,6 +31,11 @@ final class DisplayController {
             configureEnabled = unsafeBitCast(sym, to: ConfigureDisplayEnabledFn.self)
         } else {
             configureEnabled = nil
+        }
+        if let sym = dlsym(rtldDefault, "CGSGetDisplayList") {
+            getDisplayList = unsafeBitCast(sym, to: GetDisplayListFn.self)
+        } else {
+            getDisplayList = nil
         }
     }
 
@@ -37,13 +53,84 @@ final class DisplayController {
         return Array(ids.prefix(Int(count)))
     }
 
-    func builtinDisplay() -> CGDirectDisplayID? {
-        onlineDisplays().first { CGDisplayIsBuiltin($0) != 0 }
+    func allDisplays() -> [CGDirectDisplayID] {
+        if let fn = getDisplayList {
+            var count: UInt32 = 0
+            if fn(0, nil, &count) == .success, count > 0 {
+                var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+                if fn(count, &ids, &count) == .success {
+                    return Array(ids.prefix(Int(count)))
+                }
+            }
+        }
+        return onlineDisplays()
     }
 
-    /// 在线的外接显示器（非内置）
+    func builtinDisplay() -> CGDirectDisplayID? {
+        // 1. 内存缓存
+        if let cached = cachedBuiltinDisplayID {
+            return cached
+        }
+
+        // 2. UserDefaults 持久化（足够用了）
+        if let backup = UserDefaults.standard.object(forKey: builtinIDKey) as? Int {
+            cachedBuiltinDisplayID = CGDirectDisplayID(backup)
+            return cachedBuiltinDisplayID
+        }
+
+        // 3. 实时查询并缓存
+        if let builtin = allDisplays().first(where: { CGDisplayIsBuiltin($0) != 0 }) {
+            cachedBuiltinDisplayID = builtin
+            UserDefaults.standard.set(Int(builtin), forKey: builtinIDKey)
+            return builtin
+        }
+
+        // 4. Fallback: 方式2 - NSScreen.screens（只能找到启用的显示器，但更稳定）
+        var seenIDs = Set<CGDirectDisplayID>()
+        for screen in NSScreen.screens {
+            guard
+                let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                    as? CGDirectDisplayID,
+                !seenIDs.contains(displayID)
+            else { continue }
+
+            seenIDs.insert(displayID)
+
+            let isBuiltin = CGDisplayIsBuiltin(displayID) != 0
+            if isBuiltin {
+                cachedBuiltinDisplayID = displayID
+                UserDefaults.standard.set(Int(displayID), forKey: builtinIDKey)
+                return displayID
+            }
+        }
+
+        return nil
+    }
+
+    /// 外接显示器（非内置且在 NSScreen.screens 中）
     func externalDisplays() -> [CGDirectDisplayID] {
-        onlineDisplays().filter { CGDisplayIsBuiltin($0) == 0 }
+        var externals: [CGDirectDisplayID] = []
+        var seenIDs = Set<CGDirectDisplayID>()
+
+        for screen in NSScreen.screens {
+            guard
+                let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                    as? CGDirectDisplayID,
+                !seenIDs.contains(displayID)
+            else { continue }
+
+            seenIDs.insert(displayID)
+
+            let isBuiltin = CGDisplayIsBuiltin(displayID) != 0
+            let name = screen.localizedName.trimmingCharacters(in: .whitespaces)
+
+            // 排除内置显示器和空名称的显示器（"ghost display"）
+            if !isBuiltin && !name.isEmpty {
+                externals.append(displayID)
+            }
+        }
+
+        return externals
     }
 
     func hasExternalDisplay() -> Bool { !externalDisplays().isEmpty }
@@ -60,7 +147,7 @@ final class DisplayController {
         case ok
         case apiMissing
         case noBuiltin
-        case noExternal           // 安全拦截：没有外接显示器，拒绝关闭内置（否则全黑无法操作）
+        case noExternal  // 安全拦截：没有外接显示器，拒绝关闭内置（否则全黑无法操作）
         case beginFailed(Int32)
         case configureFailed(Int32)
         case completeFailed(Int32)
@@ -69,13 +156,13 @@ final class DisplayController {
 
         var message: String {
             switch self {
-            case .ok:                   return "成功"
-            case .apiMissing:           return "当前系统不支持该接口"
-            case .noBuiltin:            return "未找到内置显示器"
-            case .noExternal:           return "没有外接显示器，已拒绝（否则会全黑）"
-            case .beginFailed(let e):   return "开始配置失败 (CGError \(e))"
+            case .ok: return "成功"
+            case .apiMissing: return "当前系统不支持该接口"
+            case .noBuiltin: return "未找到内置显示器"
+            case .noExternal: return "没有外接显示器，已拒绝（否则会全黑）"
+            case .beginFailed(let e): return "开始配置失败 (CGError \(e))"
             case .configureFailed(let e): return "设置失败 (CGError \(e))"
-            case .completeFailed(let e):  return "应用配置失败 (CGError \(e))"
+            case .completeFailed(let e): return "应用配置失败 (CGError \(e))"
             }
         }
     }
@@ -99,9 +186,11 @@ final class DisplayController {
         return apply(fn, display: builtin, enabled: true)
     }
 
-    private func apply(_ fn: ConfigureDisplayEnabledFn,
-                       display: CGDirectDisplayID,
-                       enabled: Bool) -> Result {
+    private func apply(
+        _ fn: ConfigureDisplayEnabledFn,
+        display: CGDirectDisplayID,
+        enabled: Bool
+    ) -> Result {
         var config: CGDisplayConfigRef?
         let begin = CGBeginDisplayConfiguration(&config)
         if begin != .success { return .beginFailed(begin.rawValue) }
