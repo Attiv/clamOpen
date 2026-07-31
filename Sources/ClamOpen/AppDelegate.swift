@@ -106,7 +106,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleAuto() {
         autoMode.toggle()
-        if autoMode { evaluateAuto() }
+        if autoMode {
+            evaluateAuto()
+        } else {
+            controller.enableBuiltin()
+            intentDisabled = false
+        }
         refresh()
     }
 
