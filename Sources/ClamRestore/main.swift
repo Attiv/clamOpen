@@ -11,8 +11,12 @@ typealias GetListFn    = @convention(c) (UInt32, UnsafeMutablePointer<CGDirectDi
 
 let rtld = UnsafeMutableRawPointer(bitPattern: -2)
 
+// 系统首选语言为中文时输出中文，否则输出英文
+let isChinese = (Locale.preferredLanguages.first?.lowercased() ?? "en").hasPrefix("zh")
+func tr(_ en: String, _ zh: String) -> String { isChinese ? zh : en }
+
 guard let sEnabled = dlsym(rtld, "CGSConfigureDisplayEnabled") else {
-    FileHandle.standardError.write("ERROR: CGSConfigureDisplayEnabled 不可用\n".data(using: .utf8)!)
+    FileHandle.standardError.write(tr("ERROR: CGSConfigureDisplayEnabled is unavailable\n", "ERROR: CGSConfigureDisplayEnabled 不可用\n").data(using: .utf8)!)
     exit(2)
 }
 let setEnabled = unsafeBitCast(sEnabled, to: SetEnabledFn.self)
@@ -46,14 +50,20 @@ func enable(_ id: CGDirectDisplayID) -> Bool {
     return CGCompleteDisplayConfiguration(cfg, .forSession) == .success
 }
 
-let displays = allDisplays()
+// 内置屏已禁用且外接已拔掉时，CGSGetDisplayList 只剩一台虚拟占位显示器，内置屏不在其中。
+// 因此额外尝试 ClamOpen 记住的内置屏 ID，以及内置屏的常见 ID 1。
+let savedBuiltin = UserDefaults(suiteName: "com.clamopen.app")?.integer(forKey: "builtinDisplayID") ?? 0
+var displays = allDisplays()
+for id in [CGDirectDisplayID(savedBuiltin), 1] where id > 0 && !displays.contains(id) {
+    displays.append(id)
+}
 var restored = 0
 for d in displays {
-    let builtin = CGDisplayIsBuiltin(d) != 0
+    let builtin = CGDisplayIsBuiltin(d) != 0 || d == CGDirectDisplayID(savedBuiltin)
     if enable(d) {
         restored += 1
-        let tag = builtin ? "(内置)" : "(外接)"
-        FileHandle.standardError.write("已启用 \(d) \(tag)\n".data(using: .utf8)!)
+        let tag = builtin ? tr("(internal)", "(内置)") : tr("(external)", "(外接)")
+        FileHandle.standardError.write(tr("Enabled \(d) \(tag)\n", "已启用 \(d) \(tag)\n").data(using: .utf8)!)
     }
 }
-FileHandle.standardError.write("ClamRestore: 已恢复 \(restored)/\(displays.count) 台显示器\n".data(using: .utf8)!)
+FileHandle.standardError.write(tr("ClamRestore: restored \(restored)/\(displays.count) display(s)\n", "ClamRestore: 已恢复 \(restored)/\(displays.count) 台显示器\n").data(using: .utf8)!)

@@ -100,13 +100,16 @@ cd clamOpen
 
 或仅编译：`swift build -c release`
 
+运行单元测试：`swift test`
+
 ## 安装
 
 把 **`ClamOpen.app`** 和 **`恢复内置屏.app`** 都拖进 `/Applications`。急救 App 放进去后，Spotlight
 才能在全黑时被你盲打搜到（强烈建议）。首次运行若被 Gatekeeper 拦截（本地 ad-hoc 签名），右键点
 App →「打开」即可。
 
-开机自启：系统设置 → 通用 → 登录项 → 添加 `ClamOpen.app`。
+开机自启：点击菜单栏图标 →「登录时启动」（macOS 13+）。请先把 App 移到 `/Applications` 再开启，因为它会按当前位置注册。
+macOS 12 请在 系统设置 → 通用 → 登录项 中手动添加 `ClamOpen.app`。
 
 ## 使用
 
@@ -114,7 +117,7 @@ App →「打开」即可。
 
 1. 接上外接显示器。
 2. 点菜单栏图标 →「关闭内置屏（只用外接）」。
-3. 想恢复 →「恢复内置屏」，或开启「自动」模式。
+3. 想恢复 →「恢复内置屏」，或开启「接外接显示器时自动关闭内置屏」，插拔时自动切换。
 
 ### 电源管理（防止夜间耗电）
 
@@ -141,15 +144,31 @@ pmset -g log | grep -E "DarkWake" | tail -20
 ```
 查看夜间唤醒次数是否明显减少。
 
+### 界面语言
+
+界面跟随 macOS 系统语言：首选语言为中文时显示**简体中文**，否则显示**英文**。如需单独为 ClamOpen 指定语言：
+
+```bash
+defaults write com.clamopen.app AppleLanguages '("zh-Hans")'
+```
+
+（改为 `'("en")'` 即为英文；`defaults delete com.clamopen.app AppleLanguages` 恢复跟随系统），然后重新启动 App。
+
 ## 项目结构
 
 ```
-Sources/ClamOpen/      菜单栏主程序
-  ├── DisplayController.swift   显示器控制（私有接口调用）
+Sources/ClamOpenCore/  可测试的核心逻辑（不依赖 AppKit）
+  ├── DisplaySystem.swift        底层显示接口（私有 CoreGraphics 调用），以协议抽象
+  ├── DisplayController.swift    内置 / 外接显示器查询与开关
+  ├── DisplayPolicy.swift        状态机：手动开关、自动模式、安全恢复、watchdog
   ├── PowerManager.swift         电源管理（休眠优化）
-  ├── AppDelegate.swift          应用主逻辑
+  └── L10n.swift                 界面语言选择（英文 / 中文）
+Sources/ClamOpen/      菜单栏主程序（仅 UI）
+  ├── AppDelegate.swift
   └── main.swift
 Sources/ClamRestore/   独立急救恢复工具
+Tests/ClamOpenCoreTests/  单元测试（模拟 Apple Silicon / Intel 显示器、合盖、错误）
+Localization/          本地化 Bundle 名称（InfoPlist.strings，en / zh-Hans）
 make_icon.swift        程序化图标生成
 build_app.sh           构建并打包两个 .app
 Info*.plist            Bundle 元数据
@@ -158,7 +177,7 @@ scripts/               开发 / 验证脚本（探针、开关测试、禁用）
 
 ## 兼容性
 
-- 实测：macOS 26.5.1，Intel（UHD 630 + Radeon Pro 5500M）。
+- 实测：macOS 26.5.1，Intel（UHD 630 + Radeon Pro 5500M）；macOS 26.5.2，Apple Silicon（M1 Max）。
 - `CGSConfigureDisplayEnabled` 路径在 Intel 与 Apple Silicon 上均可用。
 - 私有接口可能随系统更新变化；截至撰写在上述系统稳定可用。
 

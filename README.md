@@ -115,13 +115,17 @@ This produces:
 
 Or just compile the binaries: `swift build -c release`
 
+Run the unit tests: `swift test`
+
 ## Install
 
 Drag **both** `ClamOpen.app` and `恢复内置屏.app` into `/Applications`. Putting the Restore app there
 lets Spotlight find it when the screen is black (strongly recommended). First launch may be blocked by
 Gatekeeper (local ad-hoc signature) — right-click → **Open**.
 
-Launch at login: System Settings → General → Login Items → add `ClamOpen.app`.
+Launch at login: click the menu-bar icon → **Launch at Login** (macOS 13+). Enable it *after* moving the app to
+`/Applications`, since it registers the app at its current location. On macOS 12, add `ClamOpen.app` manually in
+System Settings → General → Login Items.
 
 ## Usage
 
@@ -129,7 +133,7 @@ Launch at login: System Settings → General → Login Items → add `ClamOpen.a
 
 1. Connect an external display.
 2. Click the menu-bar icon → **Turn off the internal display**.
-3. To bring it back → **Restore the internal display**, or enable **Auto** mode.
+3. To bring it back → **Restore the internal display**, or enable **Use External Only When Connected** so it happens automatically on plug / unplug.
 
 ### Power Management (Prevent Night-time Battery Drain)
 
@@ -156,15 +160,32 @@ pmset -g log | grep -E "DarkWake" | tail -20
 ```
 to check if night-time wake-ups have decreased significantly.
 
+### Language
+
+The UI follows your macOS language: **Simplified Chinese** when your preferred language is Chinese,
+**English** otherwise. To force a language for ClamOpen only:
+
+```bash
+defaults write com.clamopen.app AppleLanguages '("en")'
+```
+
+(use `'("zh-Hans")'` for Chinese, or `defaults delete com.clamopen.app AppleLanguages` to follow the system again), then relaunch the app.
+
 ## Project structure
 
 ```
-Sources/ClamOpen/      Menu-bar app
-  ├── DisplayController.swift   Display control (private API calls)
+Sources/ClamOpenCore/  Testable core logic (no AppKit)
+  ├── DisplaySystem.swift        Low-level display API (private CoreGraphics calls) behind a protocol
+  ├── DisplayController.swift    Internal / external display queries and on/off
+  ├── DisplayPolicy.swift        State machine: manual toggle, auto mode, safety restore, watchdog
   ├── PowerManager.swift         Power management (sleep optimization)
-  ├── AppDelegate.swift          Main app logic
+  └── L10n.swift                 UI language selection (English / Chinese)
+Sources/ClamOpen/      Menu-bar app (UI only)
+  ├── AppDelegate.swift
   └── main.swift
 Sources/ClamRestore/   Standalone emergency restore tool
+Tests/ClamOpenCoreTests/  Unit tests (simulated Apple Silicon / Intel displays, lid, errors)
+Localization/          Localized bundle names (InfoPlist.strings, en / zh-Hans)
 make_icon.swift        Programmatic icon generator
 build_app.sh           Build + package both .apps
 Info*.plist            Bundle metadata
@@ -173,7 +194,7 @@ scripts/               Dev / verification scripts (probe, toggle test, disable)
 
 ## Compatibility
 
-- Tested on macOS 26.5.1, Intel (UHD 630 + Radeon Pro 5500M).
+- Tested on macOS 26.5.1, Intel (UHD 630 + Radeon Pro 5500M), and macOS 26.5.2, Apple Silicon (M1 Max).
 - The `CGSConfigureDisplayEnabled` path works on both Intel and Apple Silicon.
 - Private APIs may change between macOS releases; stable on the above as of writing.
 
