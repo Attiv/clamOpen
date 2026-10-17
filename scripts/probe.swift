@@ -14,11 +14,12 @@ for d in ids {
     let main = CGDisplayIsMain(d) != 0
     let active = CGDisplayIsActive(d) != 0
     let online = CGDisplayIsOnline(d) != 0
+    let asleep = CGDisplayIsAsleep(d) != 0
     let w = CGDisplayPixelsWide(d)
     let h = CGDisplayPixelsHigh(d)
     let vendor = CGDisplayVendorNumber(d)
     let model = CGDisplayModelNumber(d)
-    print("  ID=\(d) builtin=\(builtin) main=\(main) active=\(active) online=\(online) \(w)x\(h) vendor=\(vendor) model=\(model)")
+    print("  ID=\(d) builtin=\(builtin) main=\(main) active=\(active) online=\(online) asleep=\(asleep) \(w)x\(h) vendor=\(vendor) model=\(model)")
 }
 
 // ---- 查找私有/相关符号 ----

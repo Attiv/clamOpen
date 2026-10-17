@@ -1,4 +1,5 @@
 import AppKit
+import ClamCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -6,12 +7,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let powerManager = PowerManager()
     private var statusItem: NSStatusItem!
 
-    /// 当前“意图”：用户或自动逻辑希望内置屏保持关闭
-    private var intentDisabled = false
+    private let recoveryLatch = FileRecoveryLatch()
+    private lazy var safety = DisplaySafetyCoordinator(
+        backend: controller, latch: recoveryLatch, log: RecoveryDiagnostics.record)
+    private var hotKey: RecoveryHotKey?
+    private var hotKeyAvailable = false
+    private var terminating = false
+    private var terminationDeadline: TimeInterval = 0
+    private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     /// 自动模式：检测到外接显示器自动关闭内置，拔掉自动恢复
     private var autoMode = false {
-        didSet { UserDefaults.standard.set(autoMode, forKey: "autoMode") }
+        didSet {
+            UserDefaults.standard.set(autoMode, forKey: "autoMode")
+            safety.autoMode = autoMode
+        }
     }
 
     private var watchdog: Timer?
@@ -34,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self
+        menu.autoenablesItems = false
         statusItem.menu = menu
 
         NotificationCenter.default.addObserver(
@@ -41,8 +52,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
 
         // 底层显示重配置回调：拔外接的瞬间即时恢复内置屏（与上面的通知互为双保险）
-        CGDisplayRegisterReconfigurationCallback(
+        let registration = CGDisplayRegisterReconfigurationCallback(
             reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
+        if registration != .success {
+            RecoveryDiagnostics.record("display callback registration failed: \(registration.rawValue)")
+        }
+
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
+                     NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
+                     NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            workspace.addObserver(self, selector: #selector(powerEvent(_:)), name: name, object: nil)
+        }
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(emergencyRequested), name: FileRecoveryLatch.notificationName,
+            object: nil, suspensionBehavior: .deliverImmediately)
+        hotKey = RecoveryHotKey { [weak self] in self?.enable() }
+        hotKeyAvailable = hotKey?.register() == true
+        RecoveryDiagnostics.record("ClamOpen started; auto=\(autoMode) hotkey=\(hotKeyAvailable); \(controller.snapshot())")
 
         startWatchdog()
         rebuildMenu()
@@ -50,47 +77,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !controller.isAPIAvailable {
             notify("当前系统不支持", "无法调用 CGSConfigureDisplayEnabled 私有接口。")
-        } else if autoMode {
-            evaluateAuto()
+        } else {
+            let snapshot = controller.snapshot()
+            // A restarted app must not inherit an untracked disabled display.
+            if !snapshot.builtinActive && !snapshot.screensAppearAsleep {
+                safety.requestRecovery(now: now, forceAwake: false)
+            }
+            enforceSafety()
         }
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminating { return .terminateLater }
+        safety.requestRecovery(now: now)
+        if safety.recoveryStatus == .verified { return .terminateNow }
+        terminating = true
+        terminationDeadline = now + 12
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        // 退出前务必恢复内置屏，避免用户退出后找不到开关
-        if intentDisabled { controller.enableBuiltin() }
+        watchdog?.invalidate()
+        hotKey?.unregister()
+        CGDisplayRemoveReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        DistributedNotificationCenter.default().removeObserver(self)
+        RecoveryDiagnostics.record("ClamOpen stopped; recovery=\(safety.recoveryStatus)")
     }
 
     // MARK: - 动作
 
     @objc private func disable() {
-        let r = controller.disableBuiltin()
-        switch r {
-        case .ok:
-            intentDisabled = true
-        case .noExternal:
-            notify("无法关闭内置屏", "请先连接外接显示器，否则屏幕会全黑、无法操作。")
-        default:
-            notify("关闭失败", r.message)
-        }
+        let result = safety.disableByUser(now: now)
+        if case .failed = result { notify("未关闭内置屏", result.message) }
         refresh()
     }
 
     @objc private func enable() {
-        controller.enableBuiltin()
-        intentDisabled = false
-        refresh()
+        safety.requestRecovery(now: now)
+        // No synchronous pmset/menu rebuild on the emergency path; retries need
+        // the main run loop. The menu gets fresh state when it is next opened.
+        updateIcon()
     }
 
     @objc private func toggleAuto() {
-        autoMode.toggle()
-        if autoMode { evaluateAuto() }
+        let enabled = !autoMode
+        let result = safety.setAutoModeByUser(enabled, now: now)
+        autoMode = enabled
+        if case .failed = result {
+            notify("自动模式已开启，但暂不能关屏", result.message)
+        }
         refresh()
     }
 
-    @objc private func quit() {
-        if intentDisabled { controller.enableBuiltin() }
-        NSApp.terminate(nil)
-    }
+    @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func showPowerSettings() {
         let summary = powerManager.getPowerSettingsSummary()
@@ -162,59 +203,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    // MARK: - 自动模式 & 安全恢复
+    // MARK: - 睡眠、唤醒与安全恢复（统一状态机）
 
-    @objc private func screensChanged() {
-        enforceSafety()
-    }
+    @objc private func screensChanged() { enforceSafety() }
 
-    /// 安全收敛：任何显示器变化后调用。
-    /// 硬规则：处于关闭意图但已无外接 → 立即恢复内置屏，杜绝全黑死局。
-    func enforceSafety() {
-        if intentDisabled && !controller.hasExternalDisplay() {
-            controller.enableBuiltin()
-            intentDisabled = false
-        } else if autoMode {
-            evaluateAuto()
+    @objc private func powerEvent(_ notification: Notification) {
+        RecoveryDiagnostics.record("workspace event: \(notification.name.rawValue)")
+        switch notification.name {
+        case NSWorkspace.willSleepNotification:
+            safety.systemWillSleep()
+        case NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification:
+            safety.screensDidSleep()
+        case NSWorkspace.didWakeNotification:
+            safety.systemDidWake(now: now)
+        case NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification:
+            safety.screensDidWake(now: now)
+        default: break
         }
-        refresh()
+        updateIcon()
     }
 
-    private func evaluateAuto() {
-        guard autoMode else { return }
-        if controller.hasExternalDisplay() {
-            if controller.isBuiltinActive(), controller.disableBuiltin() == .ok {
-                intentDisabled = true
-            }
-        } else if intentDisabled || !controller.isBuiltinActive() {
-            controller.enableBuiltin()
-            intentDisabled = false
+    @objc private func emergencyRequested() {
+        DispatchQueue.main.async { [weak self] in self?.enable() }
+    }
+
+    func enforceSafety() {
+        safety.tick(now: now)
+        updateIcon()
+        if terminating && (safety.recoveryStatus == .verified || safety.recoveryStatus == .failed
+                           || now >= terminationDeadline) {
+            RecoveryDiagnostics.record("quit recovery finished: \(safety.recoveryStatus)")
+            NSApp.reply(toApplicationShouldTerminate: true)
         }
     }
 
     private func startWatchdog() {
-        // 用 .common 模式，确保菜单打开时也持续运行
-        let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
-            guard let self else { return }
-
-            // 1) 安全恢复：意图关闭却已无外接
-            if self.intentDisabled && !self.controller.hasExternalDisplay() {
-                self.controller.enableBuiltin()
-                self.intentDisabled = false
-                self.refresh()
-                return
-            }
-            // 2) Intel 偶发唤醒：意图关闭但内置又被点亮 → 重新关闭
-            if self.intentDisabled && self.controller.hasExternalDisplay()
-                && self.controller.isBuiltinActive() {
-                self.controller.disableBuiltin()
-                self.updateIcon()
-            }
-            // 3) 自动模式常态评估
-            if self.autoMode { self.evaluateAuto() }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        watchdog = t
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.enforceSafety() }
+        timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
     }
 
     // MARK: - UI
@@ -225,7 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateIcon() {
-        let off = intentDisabled || !controller.isBuiltinActive()
+        let off = !controller.snapshot().builtinActive
         let symbol = off ? "laptopcomputer.slash" : "laptopcomputer"
         if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: "ClamOpen") {
             img.isTemplate = true
@@ -241,46 +268,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let menu = statusItem.menu else { return }
         menu.removeAllItems()
 
-        let hasExt = controller.hasExternalDisplay()
-        let builtinActive = controller.isBuiltinActive()
+        let snapshot = controller.snapshot()
+        let externalCount = snapshot.displays.filter { !$0.builtin && $0.online }.count
+        let hasExt = snapshot.hasUsableExternal
 
         // —— 状态信息 ——
         let statusText: String
         if !controller.isAPIAvailable {
             statusText = "⚠︎ 当前系统不支持"
-        } else if !builtinActive && intentDisabled {
-            statusText = "内置屏：已关闭（仅外接）"
+        } else if safety.isSleeping {
+            statusText = "等待显示器唤醒（暂停关屏）"
+        } else if safety.recoveryStatus == .failed {
+            statusText = "⚠︎ 未确认恢复，请再次急救"
+        } else if safety.recoveryStatus == .recovering {
+            statusText = "正在恢复内置屏…"
+        } else if safety.isRecoveryHeld {
+            statusText = "安全模式：保持内置屏开启"
         } else {
-            statusText = "内置屏：开启中"
+            statusText = snapshot.builtinActive ? "内置屏：开启中" : "内置屏：已关闭（仅外接）"
         }
         addInfo(menu, statusText)
-        addInfo(menu, hasExt ? "外接显示器：\(controller.externalDisplays().count) 台已连接"
-                             : "外接显示器：未连接")
-
+        addInfo(menu, "外接：\(externalCount) 台在线，\(hasExt ? "可用" : "未确认已唤醒")")
+        if let error = safety.lastError { addInfo(menu, error) }
+        if safety.isRecoveryHeld { addInfo(menu, "主动关屏或重新开启自动模式可解除安全暂停") }
         menu.addItem(.separator())
 
-        // —— 主开关 ——
-        if builtinActive {
-            let item = NSMenuItem(title: "关闭内置屏（只用外接）",
-                                  action: #selector(disable), keyEquivalent: "d")
-            item.target = self
-            item.isEnabled = hasExt && controller.isAPIAvailable
-            if !hasExt { item.toolTip = "需要先连接外接显示器" }
-            menu.addItem(item)
-        } else {
-            let item = NSMenuItem(title: "恢复内置屏",
-                                  action: #selector(enable), keyEquivalent: "e")
-            item.target = self
-            menu.addItem(item)
-        }
+        let disableItem = NSMenuItem(title: "关闭内置屏（只用外接）", action: #selector(disable), keyEquivalent: "d")
+        disableItem.target = self
+        disableItem.isEnabled = hasExt && controller.isAPIAvailable && !safety.isSleeping
+            && safety.recoveryStatus != .recovering && !terminating
+        menu.addItem(disableItem)
 
+        let restoreTitle = hotKeyAvailable ? "紧急恢复内置屏（⌃⌥⌘R）" : "紧急恢复内置屏（快捷键不可用）"
+        let restoreItem = NSMenuItem(title: restoreTitle, action: #selector(enable), keyEquivalent: "e")
+        restoreItem.target = self
+        menu.addItem(restoreItem)
         menu.addItem(.separator())
 
         // —— 自动模式 ——
-        let auto = NSMenuItem(title: "自动：接外接关、拔掉恢复",
+        let autoTitle = autoMode && safety.isRecoveryHeld
+            ? "自动：已暂停（关闭后重新开启可恢复）" : "自动：接外接关、拔掉恢复"
+        let auto = NSMenuItem(title: autoTitle,
                               action: #selector(toggleAuto), keyEquivalent: "")
         auto.target = self
         auto.state = autoMode ? .on : .off
+        auto.isEnabled = !terminating
         menu.addItem(auto)
 
         menu.addItem(.separator())
@@ -323,10 +355,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         安全保障：
         • 没有外接显示器时不会关闭内置屏
         • 拔掉外接显示器会自动恢复内置屏
-        • 退出本 App 会自动恢复内置屏
+        • 唤醒或急救后保持内置屏开启，直到你主动关屏或重新开启自动模式
+        • 退出时尝试恢复并验证，失败会记录日志
 
         万一屏幕异常 / 全黑：
-        拔掉外接显示器，或注销、重启 Mac 即可恢复（设置只在本次登录会话生效）。
+        按 Control + Option + Command + R，或启动「恢复内置屏」。
+        全局快捷键需要主程序运行；锁屏/登录界面不保证可用。
+        独立恢复 App 不依赖主程序运行；两者都不能修复系统/GPU 硬死机。
+
+        诊断日志：运行项目 scripts/diagnose_wake.sh。
         """
         a.addButton(withTitle: "好")
         NSApp.activate(ignoringOtherApps: true)

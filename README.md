@@ -34,9 +34,9 @@ macOS only powers down the internal panel in *clamshell* mode (lid closed). If y
 - 🖥️ One click to turn the internal display off / on from the menu bar
 - 🤖 **Auto mode** — disable the internal display when an external one is connected, restore it when unplugged
 - 🔋 **Power management** — one-click optimization of sleep settings to prevent frequent wake-ups at night (disables TCP Keep Alive, network wake, etc.)
-- 🛟 **Crash-proof recovery** — a standalone *Restore* app brings the internal display back even if the main app dies (works while the screen is black, via Spotlight)
+- 🛟 **Independent recovery** — a standalone *Restore* app works without the main app; the main app also provides the `⌃⌥⌘R` global recovery shortcut
 - 🔒 **Safety first** — refuses to turn the internal display off when no external display is present; auto-restores on unplug / quit
-- 🪶 Menu-bar only (no Dock icon), no background daemon, no permanent system changes
+- 🪶 Menu-bar only (no Dock icon), no background daemon; display changes are session-scoped (optional power settings persist)
 
 ## How it works
 
@@ -74,29 +74,38 @@ path, which works on both Intel and Apple Silicon.)
 
 ## Safety & recovery
 
-Turning the internal display off and then **unplugging the external one** could, in theory, leave you
-with no visible screen. ClamOpen guards against this with several **independent** layers:
+### v1.1.1: wake-safe mode and explicit Auto resume
 
-- It **refuses** to disable the internal display when no external display is online.
-- On unplug it **auto-restores** the internal display via three independent triggers: a low-level
-  `CGDisplayRegisterReconfigurationCallback` (fires the instant the cable is pulled), the AppKit
-  screen-parameters notification, and a 1.5 s watchdog.
-- It **restores on quit**.
-- On Intel, if the panel is occasionally woken at minimum brightness, the watchdog turns it back off
-  within 1.5 s.
+- Disabling requires an external display that is **online, active and not asleep**. This is a software-state check, not proof that the physical panel shows an image.
+- System/display sleep suspends configuration. System wake without screen-wake evidence waits rather than treating maintenance/DarkWake as a user-visible wake.
+- Wake, manual/independent recovery, or unexpected built-in activation enters **safe mode**. Auto mode and the watchdog will not disable the restored screen again.
+- Explicitly choose **Turn off the internal display**, or deliberately **enable Auto**, to leave safe mode. If the external display is usable and recovery/emergency guards allow it, Auto immediately disables the built-in display. Passive startup preference loading never releases the safety hold.
+- A checked but held Auto preference is labelled **paused** in the menu. Turn it off and back on to explicitly resume. Without a usable external display, enabling Auto only arms the preference; it neither forces display-off nor clears an existing safety hold.
+- CoreGraphics callbacks, AppKit screen notifications and an approximately one-second watchdog use the same coordinator.
+- Recovery submits at most four configuration attempts (approximately at 0, 1, 3 and 7 seconds under normal scheduling). Success requires a subsequent snapshot showing the built-in display active and awake, not just API success. Failure is visible in the menu/logs; request recovery again to retry.
+- Normal quit performs bounded recovery and verification. Force-killing the app cannot run its quit handler.
 
-### If the screen ever goes black
+The independent tool atomically writes a UUID request before enabling the built-in display. The main app receives it through notifications and polling. Releasing safe mode acknowledges only a consumed UUID; it does not delete a newer concurrent request. This state persists under `~/Library/Application Support/ClamOpen/`, including across app restarts.
 
-Any one of these brings the internal display back:
+### If both screens go black
 
-1. **Spotlight blind-type (works while black)** — press `⌘ Space`, type `恢复内置屏` (the Restore
-   app), press Enter. No need to see the screen.
-2. **Unplug the external display** — auto-restores.
-3. **Close and reopen the lid** — macOS re-enumerates displays.
-4. **Log out / reboot** — the `forSession` scope guarantees a restore.
+1. Press **Control + Option + Command + R** (`⌃⌥⌘R`) while the main app runs. Registration failure is shown in the menu. Availability at the lock/login screen is not guaranteed.
+2. Use Spotlight (`⌘ Space`) to launch `恢复内置屏`. The tool does not require the main app, and the updated main app will not fight its recovery.
+3. Unplug the external display to let the running main app attempt recovery.
+4. If necessary, close/reopen the lid or log out/reboot to establish a new display session.
 
-> Tested: with the main app *not running*, launching the Restore app alone brings a disabled internal
-> display back to active.
+These are recovery attempts, not a guarantee against OS/GPU hangs or private-API failures.
+
+### Diagnostics and acceptance testing
+
+```bash
+swift test                           # simulated backend; no physical display changes
+./scripts/diagnose_wake.sh > ~/clamopen-wake.txt
+```
+
+The diagnostic script reads system/version information, power settings, recent sleep/wake events, display state and ClamOpen logs. It changes no configuration. Review device/process information before sharing logs.
+
+After saving work, manually verify: screen-only and full-system sleep/wake with Auto both off/on; the shortcut and independent tool followed by at least ten seconds without re-disable; external unplug/reconnect; normal quit/restart; and overnight/locked-session behavior. Night-time logs should not show repeated enable attempts caused by polling. Unit tests do not establish real-hardware overnight reliability.
 
 ## Build from source
 
@@ -121,6 +130,8 @@ Drag **both** `ClamOpen.app` and `恢复内置屏.app` into `/Applications`. Put
 lets Spotlight find it when the screen is black (strongly recommended). First launch may be blocked by
 Gatekeeper (local ad-hoc signature) — right-click → **Open**.
 
+**Upgrading:** quit the old main app, confirm the internal display is restored, replace **both** app bundles, then reopen the main app. v1.0 does not understand recovery requests and must not be used to validate the new recovery behavior.
+
 Launch at login: System Settings → General → Login Items → add `ClamOpen.app`.
 
 ## Usage
@@ -129,7 +140,7 @@ Launch at login: System Settings → General → Login Items → add `ClamOpen.a
 
 1. Connect an external display.
 2. Click the menu-bar icon → **Turn off the internal display**.
-3. To bring it back → **Restore the internal display**, or enable **Auto** mode.
+3. To bring it back → **Emergency restore**, or press `⌃⌥⌘R`. Wake/recovery pauses automatic display-off; deliberately re-enabling Auto resumes it immediately after its safety checks pass.
 
 ### Power Management (Prevent Night-time Battery Drain)
 
@@ -160,11 +171,13 @@ to check if night-time wake-ups have decreased significantly.
 
 ```
 Sources/ClamOpen/      Menu-bar app
-  ├── DisplayController.swift   Display control (private API calls)
+  ├── RecoveryHotKey.swift       Global recovery shortcut
   ├── PowerManager.swift         Power management (sleep optimization)
   ├── AppDelegate.swift          Main app logic
   └── main.swift
+Sources/ClamCore/      Shared display backend, safety coordinator, recovery latch and logging
 Sources/ClamRestore/   Standalone emergency restore tool
+Tests/ClamCoreTests/   Regression tests without physical display changes
 make_icon.swift        Programmatic icon generator
 build_app.sh           Build + package both .apps
 Info*.plist            Bundle metadata
@@ -173,14 +186,14 @@ scripts/               Dev / verification scripts (probe, toggle test, disable)
 
 ## Compatibility
 
-- Tested on macOS 26.5.1, Intel (UHD 630 + Radeon Pro 5500M).
+- Original display-toggle API tested on macOS 26.5.1, Intel (UHD 630 + Radeon Pro 5500M).
+- v1.1 builds and simulated-state tests run on macOS 26.7.1 Intel; overnight and lock-screen recovery still require hardware acceptance testing.
 - The `CGSConfigureDisplayEnabled` path works on both Intel and Apple Silicon.
 - Private APIs may change between macOS releases; stable on the above as of writing.
 
 ## Disclaimer
 
-ClamOpen uses a private Apple API. It requires no special entitlements and makes no permanent system
-changes (the setting is per-session), but private APIs are unsupported by Apple and may change between
+ClamOpen uses a private Apple API. It requires no special entitlements. Display changes are per-session (optional power-management settings persist), but private APIs are unsupported by Apple and may change between
 releases. Use at your own risk.
 
 ## License
