@@ -53,7 +53,45 @@ Files: README.md, README.zh-CN.md, Info.plist, Info-Restore.plist and this plan.
 ## Rollback
 All source changes stay on feat/gpu-management worktree. New settings are independent of
 system pmset and original applications; removing/ignoring them does not undo system policies.
-Older packages and installed app remain untouched. No remote publishing/integration requested.
+Older packages and installed app remain untouched. No default-branch integration or remote release requested.
 
 ## Progress
 - Baseline before new feature: 71 Debug tests passed, 0 failures.
+
+## Final verification (2026-10-22)
+- Test-first inventory: 8 expected assertion failures, then green. Persistence/launch/report
+  stubs: 24 failures before implementation, then green. Additional regression tests reproduced
+  mutable canonical identity, main-thread symlink resolution and nested running-helper leakage.
+- Fixture UI harness reproduced recovery-completes-before-validation late launch; independent
+  pending intent fixed it. Native read-only controls and explicit later launch recovery verified.
+- New cached lastObservedRecoveryRequestID getter in DisplaySafetyCoordinator is observational
+  only: a regression test reproduced 3 failures before implementation, then passed. AppDelegate
+  compares cached IDs across tick to catch lost-notification emergency requests without extra
+  filesystem reads. Existing display decisions, retry logic and old safety test files are unchanged.
+- Final Debug: 95 tests, 0 failures. Final Release: 95 tests, 0 failures.
+- Fixture-only native window harness: 21 PASS assertions; search/filter, unsupported controls,
+  Electron acknowledgement, private preference save, late recovery cancellation, new explicit
+  launch, close cancellation, reopening, corrupt settings, and UI rendering. No real app launcher
+  was invoked; fixture bundles contain no executable.
+- Independent reviewer: no unresolved Critical/Important findings. Minor alias-instance wording
+  now says same-identifier instance/path unconfirmed, never falsely declares a separate copy.
+- Read-only native inventory smoke: 267 apps (3 known browsers, 28 experimental Electron,
+  236 read-only), Intel/AMD capability true. Original supplied GPU report parsed as historical
+  Intel ANGLE. pmset before/after identical; installed version remains 1.1.1.
+- New window rendering visually checked from native AppKit cache (opaque composited window
+  background for transparent controls), not Screen Recording/AX or original AppDelegate.
+- Managed launches for real desktop applications, actual renderer selection, original AppDelegate
+  GUI integration and administrator interaction still require manual acceptance. No auto-install,
+  hardware switching or default-branch integration performed; the later code-push request is
+  recorded below.
+
+## Delivery
+- `~/Downloads/ClamOpen-1.3.0-GPU-Apps/` contains both signed apps, installation
+  instructions and a fixture-only window preview.
+- ZIP: `~/Downloads/ClamOpen-1.3.0-GPU-Apps.zip`
+- SHA256: `23c18bc596a11ff7217b93154e467601d703a803ac3d1bb880a58c92270d2a40`
+- Copied apps passed deep/strict codesign and plist checks; archive integrity passed.
+- The original ClamOpen worktree remains clean, installed app remains 1.1.1.
+  The user subsequently requested committing and pushing `feat/gpu-management`. Original
+  default/wake-recovery branches stay unchanged; design/plan checkpoint is 0f330df.
+  No default-branch merge or remote release is requested.

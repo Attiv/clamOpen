@@ -34,6 +34,8 @@ macOS only powers down the internal panel in *clamshell* mode (lid closed). If y
 - 🖥️ One click to turn the internal display off / on from the menu bar
 - 🤖 **Auto mode** — disable the internal display when an external one is connected, restore it when unplugged
 - 🔋 **Power management** — one-click optimization of sleep settings to prevent frequent wake-ups at night (disables TCP Keep Alive, network wake, etc.)
+- 🎛️ **GPU management** — inspect the GPU driving the main display and separate battery/AC policies; explicitly choose discrete-preferred or automatic mode on supported dual-GPU Intel Macs
+- 🧩 **Application GPU manager** — app inventory, supported browser launch preferences, experimental Electron requests and read-only fallback
 - 🛟 **Independent recovery** — a standalone *Restore* app works without the main app; the main app also provides the `⌃⌥⌘R` global recovery shortcut
 - 🔒 **Safety first** — refuses to turn the internal display off when no external display is present; auto-restores on unplug / quit
 - 🪶 Menu-bar only (no Dock icon), no background daemon; display changes are session-scoped (optional power settings persist)
@@ -167,6 +169,71 @@ pmset -g log | grep -E "DarkWake" | tail -20
 ```
 to check if night-time wake-ups have decreased significantly.
 
+### GPU Management (v1.2)
+
+The menu displays **the GPU currently driving the main display**. Its GPU submenu shows separate
+battery/AC `gpuswitch` values, discrete-preferred and automatic actions, and a refresh command.
+
+- Status uses `CGDirectDisplayCopyCurrentMetalDevice(CGMainDisplayID())`, not an application's
+  rendering context. It does **not** claim all applications are using that GPU.
+- The default Metal device API is deliberately not used as a status probe: Apple's SDK documents
+  that calling it can activate the high-power GPU on graphics-switching Macs. Enumeration uses
+  `MTLCopyAllDevices()`, which does not request a GPU switch.
+- Explicit actions run `pmset -a gpuswitch 1` (discrete-preferred) or `2` (automatic) through one
+  system administrator-authentication request. They persist for **both battery and AC power**.
+  Discrete graphics can increase power consumption and heat.
+- Both policy values are read back before reporting success. The display GPU is reported separately;
+  automatic mode can still use AMD while an external display is connected.
+- Queries and authentication run serially off the main run loop. Sleep, recovery, or termination
+  cancels pending requests. The privileged command also checks a private request marker and parent
+  process liveness after authentication, preventing stale authorization from applying a queued
+  change. Cancellation does not undo a write that already completed.
+- Single-GPU devices, Apple Silicon, and unreadable/unknown policy states are read-only. There is
+  no force-integrated action. Startup, menu opening, refresh and wake never automatically write a
+  GPU policy. Quit/uninstall does not restore persistent policies; choose automatic explicitly.
+
+**Browser limitation:** Chromium apps may select GPUs independently. Inspect `GL_RENDERER` in
+`chrome://gpu` and, if needed, restart through a high-performance GPU launcher.
+
+Automated tests use fake GPU backends and benign process-cancellation checks, never real GPU
+switches or administrator prompts. After installing the update, manually verify menu values,
+authentication cancellation, recovery responsiveness while authentication is pending, both policy
+values in `pmset -g custom`, and cancellation of pending requests during sleep/recovery/quit.
+
+### Application GPU Manager (v1.3)
+
+Open **GPU management → 应用显卡管理…**. The independent searchable/filterable window scans
+`/Applications`, `~/Applications`, `/System/Applications`, running app URLs and explicitly added
+`.app` bundles. Canonical paths, not bundle IDs, distinguish installed copies.
+
+- **Known browser adapters:** Chrome, Arc and ego lite can save default/high-performance preference.
+- **Experimental Electron:** bundles containing Electron Framework can try the same fixed
+  `--force-high-performance-gpu` request after explicit acknowledgement. Detection is not verification
+  that the app/version honors the flag. Other native/unknown apps are GPU-selection read-only.
+- Preferences apply **only to launches from this window**, not original Dock/Finder/file-association
+  entry points or previously created discrete launchers. Default means no appended flag, not force Intel.
+  Saving never launches/quits apps. Running instances with the same path or bundle ID block launching;
+  quit manually first. No force-integrated mode, injection, signed-bundle edits, daemon or hot switching.
+- Saved preference, selected main-process external argv observation and actual rendering are separate.
+  External flags do not prove actual GPU selection; apps may configure internal switches not in argv.
+  Unreadable/exited processes are unknown. Raw argv/environment are neither retained nor logged.
+- Actual GPU is **unknown** unless a user imports an unambiguous `GL_RENDERER` text report (UTF-8,
+  maximum 2 MB). Browser reports can be downloaded from `chrome://gpu`. The user assigns the report
+  to the selected app; provenance is not automatically checked. Renderer/import time are explicitly
+  historical and non-live, not evidence for every rendering context. Reports remain only in memory.
+- Versioned settings live in `~/Library/Application Support/ClamOpen/application-gpu.json`; saves are
+  atomic/private. Corrupt/unknown-version settings disable saves and preference launches without
+  overwriting the file. Scans, storage and process queries run off-main; UI identities are cached.
+  Recovery/sleep/topology/quit events permanently invalidate queued, not-yet-submitted launches.
+  A submitted launch cannot be rolled back; no automatic app termination is performed.
+
+Run `swift test`. With a logged-in macOS GUI session, `bash scripts/test_application_gpu_window.sh`
+uses only temporary fixture bundles/settings and a fake launcher, and renders the new window without
+running the original AppDelegate, launching real applications or writing pmset. For manual acceptance:
+verify read-only/experimental controls, no launches on save/refresh, running-app launch refusal, then
+quit one target app yourself and verify its renderer after an explicit managed launch. Confirm that
+original Dock entries are untouched and imported reports remain clearly non-live.
+
 ## Project structure
 
 ```
@@ -174,8 +241,9 @@ Sources/ClamOpen/      Menu-bar app
   ├── RecoveryHotKey.swift       Global recovery shortcut
   ├── PowerManager.swift         Power management (sleep optimization)
   ├── AppDelegate.swift          Main app logic
+  ├── ApplicationGPUWindowController.swift  Independent application GPU window
   └── main.swift
-Sources/ClamCore/      Shared display backend, safety coordinator, recovery latch and logging
+Sources/ClamCore/      Shared display safety/recovery, GPU policies, application inventory/preferences/launch validation
 Sources/ClamRestore/   Standalone emergency restore tool
 Tests/ClamCoreTests/   Regression tests without physical display changes
 make_icon.swift        Programmatic icon generator
@@ -187,7 +255,7 @@ scripts/               Dev / verification scripts (probe, toggle test, disable)
 ## Compatibility
 
 - Original display-toggle API tested on macOS 26.5.1, Intel (UHD 630 + Radeon Pro 5500M).
-- v1.1 builds and simulated-state tests run on macOS 26.7.1 Intel; overnight and lock-screen recovery still require hardware acceptance testing.
+- v1.3 builds, simulated-state, application GPU window and GPU policy tests run on macOS 26.7.1 Intel; overnight/lock-screen recovery and real GPU authentication still require hardware acceptance testing.
 - The `CGSConfigureDisplayEnabled` path works on both Intel and Apple Silicon.
 - Private APIs may change between macOS releases; stable on the above as of writing.
 

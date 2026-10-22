@@ -7,6 +7,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let powerManager = PowerManager()
     private var statusItem: NSStatusItem!
 
+    private let gpuController = GPUController()
+    private let gpuQueue = DispatchQueue(label: "com.clamopen.gpu", qos: .userInitiated)
+    private var gpuSnapshot: GPUSnapshot?
+    private var gpuBusy = false
+    private var gpuActivity: String?
+    private var gpuChangeRequest: GPUChangeRequest?
+    private var gpuDefaultItem: NSMenuItem?
+    private var gpuBatteryItem: NSMenuItem?
+    private var gpuACItem: NSMenuItem?
+    private var gpuActivityItem: NSMenuItem?
+    private var gpuDiscreteItem: NSMenuItem?
+    private var gpuAutomaticItem: NSMenuItem?
+    private var gpuRefreshItem: NSMenuItem?
+    private var applicationGPUWindow: ApplicationGPUWindowController?
+
     private let recoveryLatch = FileRecoveryLatch()
     private lazy var safety = DisplaySafetyCoordinator(
         backend: controller, latch: recoveryLatch, log: RecoveryDiagnostics.record)
@@ -32,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let userInfo else { return }
         if flags.contains(.beginConfigurationFlag) { return }   // 配置开始阶段状态未稳定，跳过
         let delegate = Unmanaged<AppDelegate>.fromOpaque(userInfo).takeUnretainedValue()
-        DispatchQueue.main.async { delegate.enforceSafety() }
+        DispatchQueue.main.async { delegate.screensChanged() }
     }
 
     // MARK: - 生命周期
@@ -85,9 +100,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             enforceSafety()
         }
+        refreshGPUStatus()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        applicationGPUWindow?.cancelPendingLaunch()
+        gpuChangeRequest?.cancel()
         if terminating { return .terminateLater }
         safety.requestRecovery(now: now)
         if safety.recoveryStatus == .verified { return .terminateNow }
@@ -97,6 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        applicationGPUWindow?.cancelPendingLaunch()
+        gpuChangeRequest?.cancel()
         watchdog?.invalidate()
         hotKey?.unregister()
         CGDisplayRemoveReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
@@ -115,10 +135,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func enable() {
+        applicationGPUWindow?.cancelPendingLaunch()
+        gpuChangeRequest?.cancel()
         safety.requestRecovery(now: now)
         // No synchronous pmset/menu rebuild on the emergency path; retries need
         // the main run loop. The menu gets fresh state when it is next opened.
         updateIcon()
+        applicationGPUWindow?.updateLaunchAvailability()
     }
 
     @objc private func toggleAuto() {
@@ -203,11 +226,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    // MARK: - GPU status and explicit policy changes
+
+    @objc private func refreshGPUStatus() {
+        guard !gpuBusy, !terminating else { return }
+        gpuBusy = true
+        gpuActivity = "正在读取显卡状态…"
+        updateGPUMenu()
+        let controller = gpuController
+        gpuQueue.async { [weak self] in
+            let snapshot = controller.snapshot()
+            DispatchQueue.main.async {
+                guard let self, !self.terminating else { return }
+                self.gpuSnapshot = snapshot
+                self.gpuBusy = false
+                self.gpuActivity = snapshot.readError
+                self.updateGPUMenu()
+            }
+        }
+    }
+
+    @objc private func useDiscreteGPU() { applyGPUPreference(.discrete) }
+    @objc private func useAutomaticGPU() { applyGPUPreference(.automatic) }
+
+    @objc private func showApplicationGPUManager() {
+        guard !terminating else { return }
+        if applicationGPUWindow == nil {
+            applicationGPUWindow = ApplicationGPUWindowController(canLaunch: { [weak self] in
+                self?.gpuChangeIsSafe == true
+            })
+        }
+        applicationGPUWindow?.present()
+    }
+
+    private var gpuChangeIsSafe: Bool {
+        !terminating && !safety.isSleeping && safety.recoveryStatus != .recovering
+            && safety.recoveryStatus != .failed
+    }
+
+    private func applyGPUPreference(_ preference: GPUPreference) {
+        guard !gpuBusy, gpuChangeIsSafe, gpuSnapshot?.canSwitchPolicy == true else { return }
+        gpuBusy = true
+        gpuActivity = "正在设置「\(preference.title)」，请完成系统管理员认证…"
+        let request = GPUChangeRequest()
+        gpuChangeRequest = request
+        updateGPUMenu()
+        let controller = gpuController
+        gpuQueue.async { [weak self] in
+            let result = controller.apply(preference, request: request)
+            DispatchQueue.main.async {
+                guard let self, !self.terminating else { return }
+                self.gpuSnapshot = result.snapshot
+                self.gpuBusy = false
+                self.gpuChangeRequest = nil
+                self.gpuActivity = result.outcome == .cancelled ? result.message : result.snapshot.readError
+                self.updateGPUMenu()
+                RecoveryDiagnostics.record("GPU policy request=\(preference.rawValue) outcome=\(result.outcome)")
+                if result.outcome != .cancelled {
+                    self.notify(result.outcome == .applied ? "显卡策略已更新" : "未能确认显卡策略", result.message)
+                }
+            }
+        }
+    }
+
     // MARK: - 睡眠、唤醒与安全恢复（统一状态机）
 
-    @objc private func screensChanged() { enforceSafety() }
+    @objc private func screensChanged() {
+        applicationGPUWindow?.cancelPendingLaunch()
+        enforceSafety()
+    }
 
     @objc private func powerEvent(_ notification: Notification) {
+        applicationGPUWindow?.cancelPendingLaunch()
         RecoveryDiagnostics.record("workspace event: \(notification.name.rawValue)")
         switch notification.name {
         case NSWorkspace.willSleepNotification:
@@ -220,7 +310,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             safety.screensDidWake(now: now)
         default: break
         }
+        if !gpuChangeIsSafe { gpuChangeRequest?.cancel() }
         updateIcon()
+        updateGPUMenu()
+        applicationGPUWindow?.updateLaunchAvailability()
     }
 
     @objc private func emergencyRequested() {
@@ -228,8 +321,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func enforceSafety() {
+        let wasRecoveryHeld = safety.isRecoveryHeld
+        let previousRecoveryID = safety.lastObservedRecoveryRequestID
         safety.tick(now: now)
+        if !gpuChangeIsSafe || (!wasRecoveryHeld && safety.isRecoveryHeld)
+            || previousRecoveryID != safety.lastObservedRecoveryRequestID {
+            gpuChangeRequest?.cancel()
+            applicationGPUWindow?.cancelPendingLaunch()
+        }
         updateIcon()
+        updateGPUMenu() // Cached values only; no Metal queries, pmset or authentication here.
+        applicationGPUWindow?.updateLaunchAvailability()
         if terminating && (safety.recoveryStatus == .verified || safety.recoveryStatus == .failed
                            || now >= terminationDeadline) {
             RecoveryDiagnostics.record("quit recovery finished: \(safety.recoveryStatus)")
@@ -317,6 +419,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        appendGPUMenu(to: menu)
+        menu.addItem(.separator())
+
         // —— 电源管理 ——
         let needsOpt = powerManager.needsOptimization()
         let powerTitle = needsOpt ? "⚠️ 电源管理（夜间耗电优化）" : "电源管理"
@@ -337,10 +442,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
     }
 
-    private func addInfo(_ menu: NSMenu, _ title: String) {
+    @discardableResult
+    private func addInfo(_ menu: NSMenu, _ title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
         menu.addItem(item)
+        return item
+    }
+
+    private func appendGPUMenu(to menu: NSMenu) {
+        gpuDefaultItem = addInfo(menu, "主显示器当前 GPU：读取中…")
+        let parent = NSMenuItem(title: "显卡管理", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "显卡管理")
+        submenu.autoenablesItems = false
+        gpuBatteryItem = addInfo(submenu, "电池模式：读取中…")
+        gpuACItem = addInfo(submenu, "插电模式：读取中…")
+        gpuActivityItem = addInfo(submenu, "正在读取显卡状态…")
+        submenu.addItem(.separator())
+        let discrete = NSMenuItem(title: "使用独立显卡（需管理员认证）…",
+                                  action: #selector(useDiscreteGPU), keyEquivalent: "")
+        discrete.target = self
+        submenu.addItem(discrete)
+        gpuDiscreteItem = discrete
+        let automatic = NSMenuItem(title: "恢复自动切换（需管理员认证）…",
+                                   action: #selector(useAutomaticGPU), keyEquivalent: "")
+        automatic.target = self
+        submenu.addItem(automatic)
+        gpuAutomaticItem = automatic
+        submenu.addItem(.separator())
+        let refresh = NSMenuItem(title: "刷新显卡状态", action: #selector(refreshGPUStatus), keyEquivalent: "")
+        refresh.target = self
+        submenu.addItem(refresh)
+        gpuRefreshItem = refresh
+        let applications = NSMenuItem(title: "应用显卡管理…", action: #selector(showApplicationGPUManager), keyEquivalent: "")
+        applications.target = self
+        applications.isEnabled = !terminating
+        submenu.addItem(applications)
+        addInfo(submenu, "更改同时应用于电池与插电模式；独显可能增加耗电与发热")
+        addInfo(submenu, "主屏 GPU 不代表每个应用实际使用的 GPU")
+        parent.submenu = submenu
+        menu.addItem(parent)
+        updateGPUMenu()
+    }
+
+    /// Mutate existing items instead of rebuilding a menu that may currently be tracking.
+    private func updateGPUMenu() {
+        let defaultName = gpuSnapshot?.hardware.mainDisplayDeviceName ?? (gpuBusy ? "读取中…" : "不可用")
+        gpuDefaultItem?.title = "主显示器当前 GPU：\(defaultName)"
+        gpuBatteryItem?.title = "电池模式：\(GPUPowerPolicies.label(for: gpuSnapshot?.policies.battery))"
+        gpuACItem?.title = "插电模式：\(GPUPowerPolicies.label(for: gpuSnapshot?.policies.ac))"
+        gpuActivityItem?.title = gpuActivity ?? gpuSnapshot?.switchingUnavailableReason
+            ?? (gpuChangeIsSafe ? "仅在你主动选择时更改策略" : "睡眠、恢复或退出期间暂停显卡切换")
+        let enabled = !gpuBusy && gpuChangeIsSafe && gpuSnapshot?.canSwitchPolicy == true
+        gpuDiscreteItem?.isEnabled = enabled
+        gpuAutomaticItem?.isEnabled = enabled
+        gpuDiscreteItem?.state = gpuSnapshot?.policies.matches(.discrete) == true ? .on : .off
+        gpuAutomaticItem?.state = gpuSnapshot?.policies.matches(.automatic) == true ? .on : .off
+        gpuRefreshItem?.isEnabled = !gpuBusy && !terminating
     }
 
     @objc private func showAbout() {
@@ -381,5 +539,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension AppDelegate: NSMenuDelegate {
-    func menuWillOpen(_ menu: NSMenu) { rebuildMenu() }
+    func menuWillOpen(_ menu: NSMenu) {
+        rebuildMenu()
+        refreshGPUStatus()
+    }
 }

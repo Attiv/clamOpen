@@ -71,6 +71,8 @@ public final class DisplaySafetyCoordinator {
     private var screenWakeObserved = false
     private var explicitRecovery = false
     private var observedRequestID: String?
+    /// Cached observation only; lets dependent UI invalidate work without rereading the latch.
+    public var lastObservedRecoveryRequestID: String? { observedRequestID }
     private var attempts = 0
     private var nextAttemptAt: TimeInterval = 0
     private let retryDelays: [TimeInterval] = [1, 2, 4, 2]
