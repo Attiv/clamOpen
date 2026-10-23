@@ -33,5 +33,6 @@ make_app() {
 echo "==> Assembling app bundles ..."
 make_app "ClamOpen"    "ClamOpen"   "$ROOT/Info.plist"         "AppIcon.icns"
 make_app "ClamRestore" "恢复内置屏"  "$ROOT/Info-Restore.plist" "RestoreIcon.icns"
+make_app "ClamRestore" "ClamRestore" "$ROOT/Info-Restore.plist" "RestoreIcon.icns"
 
 echo "==> Done."
