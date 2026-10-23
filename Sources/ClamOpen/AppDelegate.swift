@@ -123,6 +123,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    @objc private func toggleLaunchAtLogin() {
+        if let error = LoginItemManager.setEnabled(!LoginItemManager.isEnabled) {
+            notify("设置登录时启动失败", error)
+        }
+        refresh()
+    }
+
     @objc private func clearDisplayCache() {
         // 顺序很重要：先借现有缓存尽力恢复内置屏，再清缓存。
         // 否则内置屏处于关闭状态时清缓存，实时查询可能找不到被禁用的屏，导致无法恢复。
@@ -363,6 +370,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watchdogItem.target = self
         watchdogItem.state = watchdogEnabled ? .on : .off
         menu.addItem(watchdogItem)
+
+        menu.addItem(.separator())
+
+        // —— 登录时启动 ——
+        let loginItem = NSMenuItem(
+            title: "登录时启动",
+            action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        loginItem.target = self
+        loginItem.state = LoginItemManager.isEnabled ? .on : .off
+        if #unavailable(macOS 13.0) {
+            loginItem.toolTip = "通过系统登录项启动本 App（macOS 12 方式）"
+        }
+        menu.addItem(loginItem)
 
         menu.addItem(.separator())
 
