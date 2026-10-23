@@ -1,0 +1,70 @@
+# 可选 secrets：配置后自动使用 Developer ID 签名，未配置则 fallback ad-hoc 签名
+#   SIGN_IDENTITY          证书名，如 "Developer ID Application: Your Name (TEAMID)"
+#   MACOS_CERTIFICATE_P12  证书 .p12 的 base64（base64 -i cert.p12）
+#   MACOS_CERTIFICATE_PWD  导出 .p12 时设置的密码
+#   KEYCHAIN_PWD           CI 临时 keychain 密码（任意随机串）
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+      KEYCHAIN_PWD: ${{ secrets.KEYCHAIN_PWD }}
+      UNIVERSAL: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Import Developer ID certificate
+        if: env.SIGN_IDENTITY != '' && env.MACOS_CERTIFICATE != ''
+        run: |
+          CERT_PATH="${RUNNER_TEMP}/developer-id.p12"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 -d -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security import "$CERT_PATH" -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PWD" build.keychain
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+          rm -f "$CERT_PATH"
+
+      - name: Build app bundles
+        run: bash build_app.sh
+
+      - name: Verify signatures
+        run: |
+          for app in ClamOpen.app ClamRestore.app 恢复内置屏.app; do
+            codesign --verify --strict "$app"
+            echo "== $app =="
+            codesign -dv "$app" 2>&1 | grep -E '^(Identifier|Signature|Authority|TeamIdentifier)' || true
+          done
+
+      - name: Package
+        run: |
+          mkdir dist
+          ditto -c -k --keepParent ClamOpen.app    dist/ClamOpen.zip
+          ditto -c -k --keepParent ClamRestore.app dist/ClamRestore.zip
+          ditto -c -k --keepParent 恢复内置屏.app   dist/恢复内置屏.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClamOpen-apps
+          path: dist/*.zip
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
