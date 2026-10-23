@@ -12,11 +12,11 @@ if [[ ! -f "$ROOT/AppIcon.icns" || ! -f "$ROOT/RestoreIcon.icns" ]]; then
   iconutil -c icns "$ROOT/RestoreIcon.iconset" -o "$ROOT/RestoreIcon.icns"
 fi
 
-# 2) 编译（UNIVERSAL=1 时构建 arm64 + x86_64 通用二进制）
+# 2) 编译（ARCHES="arm64 x86_64" 时构建通用二进制；ARCHES="x86_64" 等为单架构；未设置按本机架构）
 BUILD_ARGS=()
-if [[ "${UNIVERSAL:-0}" == "1" ]]; then
-  BUILD_ARGS=(--arch arm64 --arch x86_64)
-fi
+for arch in ${ARCHES:-}; do
+  BUILD_ARGS+=(--arch "$arch")
+done
 echo "==> Building release binaries ..."
 swift build --package-path "$ROOT" -c release ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
 BIN_DIR="$(swift build --package-path "$ROOT" -c release --show-bin-path ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"})"
