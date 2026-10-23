@@ -107,7 +107,13 @@ final class DisplayController {
         return nil
     }
 
-    /// 外接显示器（非内置且在 NSScreen.screens 中）
+    /// 清除内置屏 ID 缓存（内存 + UserDefaults），下次查询将重新实时探测并自动重建缓存
+    func clearBuiltinCache() {
+        cachedBuiltinDisplayID = nil
+        UserDefaults.standard.removeObject(forKey: builtinIDKey)
+    }
+
+    /// 外接显示器（非内置且在 NSScreen.screens 中；镜像模式下通过在线列表兜底）
     func externalDisplays() -> [CGDirectDisplayID] {
         var externals: [CGDirectDisplayID] = []
         var seenIDs = Set<CGDirectDisplayID>()
@@ -130,15 +136,29 @@ final class DisplayController {
             }
         }
 
+        // 镜像兜底：镜像时 NSScreen.screens 只报告镜像组主屏，主屏为内置时上面的循环会漏判外接。
+        // 内置屏处于镜像集 ⇒ 必有外接，从在线列表中取非内置 ID。
+        if externals.isEmpty, let builtin = builtinDisplay(),
+            CGDisplayIsInMirrorSet(builtin) != 0
+        {
+            if let ext = onlineDisplays().first(where: { CGDisplayIsBuiltin($0) == 0 }),
+                !seenIDs.contains(ext)
+            {
+                externals.append(ext)
+            }
+        }
+
         return externals
     }
 
     func hasExternalDisplay() -> Bool { !externalDisplays().isEmpty }
 
-    /// 内置屏当前是否处于活动（渲染）状态
+    /// 内置屏当前是否处于活动（渲染）状态。
+    /// 镜像组中只有主屏是 CG 意义上的 active；内置屏作为镜像副屏时面板实际点亮，
+    /// 因此只要处于镜像集就视为 active。
     func isBuiltinActive() -> Bool {
         guard let b = builtinDisplay() else { return false }
-        return CGDisplayIsActive(b) != 0
+        return CGDisplayIsActive(b) != 0 || CGDisplayIsInMirrorSet(b) != 0
     }
 
     // MARK: - 操作结果

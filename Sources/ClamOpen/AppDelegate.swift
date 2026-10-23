@@ -123,6 +123,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    @objc private func clearDisplayCache() {
+        // 顺序很重要：先借现有缓存尽力恢复内置屏，再清缓存。
+        // 否则内置屏处于关闭状态时清缓存，实时查询可能找不到被禁用的屏，导致无法恢复。
+        if intentDisabled || !controller.isBuiltinActive() {
+            controller.enableBuiltin()
+            intentDisabled = false
+        }
+        controller.clearBuiltinCache()
+        enforceSafety()
+    }
+
     @objc private func quit() {
         if intentDisabled { controller.enableBuiltin() }
         NSApp.terminate(nil)
@@ -366,6 +377,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         // —— 其它 ——
+        let clearCache = NSMenuItem(
+            title: "清除显示器缓存（显示异常时使用）",
+            action: #selector(clearDisplayCache), keyEquivalent: "")
+        clearCache.target = self
+        menu.addItem(clearCache)
+
         let about = NSMenuItem(title: "关于 / 如何恢复", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
