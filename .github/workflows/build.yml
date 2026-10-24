@@ -65,15 +65,34 @@ jobs:
         run: |
           mkdir dist
           SUFFIX="-${{ matrix.arch }}"
+          # zip
           ditto -c -k --keepParent ClamOpen.app    "dist/ClamOpen${SUFFIX}.zip"
           ditto -c -k --keepParent ClamRestore.app "dist/ClamRestore${SUFFIX}.zip"
           ditto -c -k --keepParent 恢复内置屏.app   "dist/恢复内置屏${SUFFIX}.zip"
+          mkdir staging
+          # 每个 app 一个 DMG（默认样式，app + Applications 链接）
+          for app in ClamOpen.app ClamRestore.app 恢复内置屏.app; do
+            name="$(basename "$app" .app)"
+            mkdir "staging/$name"
+            cp -R "$app" "staging/$name/"
+            ln -s /Applications "staging/$name/Applications"
+            hdiutil create -volname "$name" -srcfolder "staging/$name" \
+              -format UDZO -ov "dist/$name${SUFFIX}.dmg"
+          done
+          # 一个 DMG 装 3 个 app
+          mkdir "staging/ClamOpen-Suite"
+          cp -R ClamOpen.app ClamRestore.app 恢复内置屏.app "staging/ClamOpen-Suite/"
+          ln -s /Applications "staging/ClamOpen-Suite/Applications"
+          hdiutil create -volname "ClamOpen Suite" -srcfolder "staging/ClamOpen-Suite" \
+            -format UDZO -ov "dist/ClamOpen-Suite${SUFFIX}.dmg"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ClamOpen-apps-${{ matrix.arch }}
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.dmg
 
   release:
     needs: build
@@ -92,5 +111,7 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/*.dmg
           generate_release_notes: true
