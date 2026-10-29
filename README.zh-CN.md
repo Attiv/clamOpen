@@ -83,12 +83,33 @@ CGCompleteDisplayConfiguration(config, .forSession)
 
 > 已实测：主程序**未运行**时，单独启动「恢复内置屏」App 即可把被关闭的内置屏恢复为 active。
 
+## 安装
+
+前往 [Releases](https://github.com/cs0tony/clamOpen/releases) 页面下载最新版本，然后把 **`ClamOpen.app`**
+和 **`恢复内置屏.app`** 都拖进 `/Applications`。急救 App 放进去后，Spotlight 才能在屏幕全黑时被你盲打
+搜到（强烈建议）。
+
+可选：设置开机自启 —— 系统设置 → 通用 → 登录项 → 添加 `ClamOpen.app`。
+
+### ⚠️ 首次打开注意事项
+
+> [!IMPORTANT]
+> 如果首次打开被 macOS 拦截（提示「已损坏，无法打开」或「无法验证开发者」），只需操作一次：
+>
+> 1. 打开 **系统设置 → 隐私与安全性**。
+> 2. 滚动到最底部，找到 **安全性** 一栏。
+> 3. 在「允许以下来源的应用程序」下方，会看到 `ClamOpen.app` 已被阻止的提示，点击旁边的
+>    **「仍要打开」** 按钮，并用密码或 Touch ID 验证。
+> 4. 再次打开 App，在弹窗中确认 **「打开」**。
+>
+> 两个 App 都需要操作一次。首次放行后，之后就不会再拦截了。
+
 ## 从源码构建
 
 要求：macOS 12+，Xcode / Swift 5.9+。
 
 ```bash
-git clone https://github.com/Attiv/clamOpen.git
+git clone https://github.com/cs0tony/clamOpen.git
 cd clamOpen
 ./build_app.sh        # 生成图标、编译并打包两个 App
 ```
@@ -100,13 +121,11 @@ cd clamOpen
 
 或仅编译：`swift build -c release`
 
-## 安装
+### 安装自构建版本
 
-把 **`ClamOpen.app`** 和 **`恢复内置屏.app`** 都拖进 `/Applications`。急救 App 放进去后，Spotlight
-才能在全黑时被你盲打搜到（强烈建议）。首次运行若被 Gatekeeper 拦截（本地 ad-hoc 签名），右键点
-App →「打开」即可。
-
-开机自启：系统设置 → 通用 → 登录项 → 添加 `ClamOpen.app`。
+把 **`ClamOpen.app`** 和 **`恢复内置屏.app`** 都拖进 `/Applications`（同上）。本地构建是 ad-hoc 签名，
+首次运行可能被 Gatekeeper 拦截 —— 按上文 [首次打开注意事项](#️-首次打开注意事项) 操作，或右键点
+App →「打开」。
 
 ## 使用
 

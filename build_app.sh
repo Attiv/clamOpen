@@ -12,10 +12,14 @@ if [[ ! -f "$ROOT/AppIcon.icns" || ! -f "$ROOT/RestoreIcon.icns" ]]; then
   iconutil -c icns "$ROOT/RestoreIcon.iconset" -o "$ROOT/RestoreIcon.icns"
 fi
 
-# 2) 编译
+# 2) 编译（ARCHES="arm64 x86_64" 时构建通用二进制；ARCHES="x86_64" 等为单架构；未设置按本机架构）
+BUILD_ARGS=()
+for arch in ${ARCHES:-}; do
+  BUILD_ARGS+=(--arch "$arch")
+done
 echo "==> Building release binaries ..."
-swift build --package-path "$ROOT" -c release
-BIN_DIR="$(swift build --package-path "$ROOT" -c release --show-bin-path)"
+swift build --package-path "$ROOT" -c release ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}
+BIN_DIR="$(swift build --package-path "$ROOT" -c release --show-bin-path ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"})"
 
 # 3) 组装 .app
 make_app() {
@@ -26,12 +30,18 @@ make_app() {
   cp "$BIN_DIR/$exe" "$app/Contents/MacOS/$exe"
   cp "$plist" "$app/Contents/Info.plist"
   [[ -f "$ROOT/$icns" ]] && cp "$ROOT/$icns" "$app/Contents/Resources/$icns"
-  codesign --force --sign - "$app" >/dev/null 2>&1 || echo "  (codesign skipped: $appname)"
+  if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+    echo "  signing: $appname (Developer ID)"
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$app"
+  else
+    codesign --force --sign - "$app" >/dev/null 2>&1 || echo "  (codesign skipped: $appname)"
+  fi
   echo "  built: $app"
 }
 
 echo "==> Assembling app bundles ..."
 make_app "ClamOpen"    "ClamOpen"   "$ROOT/Info.plist"         "AppIcon.icns"
 make_app "ClamRestore" "恢复内置屏"  "$ROOT/Info-Restore.plist" "RestoreIcon.icns"
+make_app "ClamRestore" "ClamRestore" "$ROOT/Info-Restore.plist" "RestoreIcon.icns"
 
 echo "==> Done."

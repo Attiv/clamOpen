@@ -1,0 +1,117 @@
+# 可选 secrets：配置后自动使用 Developer ID 签名，未配置则 fallback ad-hoc 签名
+#   SIGN_IDENTITY          证书名，如 "Developer ID Application: Your Name (TEAMID)"
+#   MACOS_CERTIFICATE_P12  证书 .p12 的 base64（base64 -i cert.p12）
+#   MACOS_CERTIFICATE_PWD  导出 .p12 时设置的密码
+#   KEYCHAIN_PWD           CI 临时 keychain 密码（任意随机串）
+#
+# 产物三个变体：universal（推荐）/ arm64 / x86_64，Release 中按后缀区分
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: universal
+            arches: 'arm64 x86_64'
+          - arch: arm64
+            arches: 'arm64'
+          - arch: x86_64
+            arches: 'x86_64'
+    env:
+      SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+      KEYCHAIN_PWD: ${{ secrets.KEYCHAIN_PWD }}
+      ARCHES: ${{ matrix.arches }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Import Developer ID certificate
+        if: env.SIGN_IDENTITY != '' && env.MACOS_CERTIFICATE != ''
+        run: |
+          CERT_PATH="${RUNNER_TEMP}/developer-id.p12"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 -d -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security import "$CERT_PATH" -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PWD" build.keychain
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+          rm -f "$CERT_PATH"
+
+      - name: Build app bundles
+        run: bash build_app.sh
+
+      - name: Verify signatures
+        run: |
+          for app in ClamOpen.app ClamRestore.app 恢复内置屏.app; do
+            codesign --verify --strict "$app"
+            echo "== ${{ matrix.arch }} / $app =="
+            codesign -dv "$app" 2>&1 | grep -E '^(Identifier|Signature|Authority|TeamIdentifier)' || true
+          done
+
+      - name: Package
+        run: |
+          mkdir dist
+          SUFFIX="-${{ matrix.arch }}"
+          # zip
+          ditto -c -k --keepParent ClamOpen.app    "dist/ClamOpen${SUFFIX}.zip"
+          ditto -c -k --keepParent ClamRestore.app "dist/ClamRestore${SUFFIX}.zip"
+          ditto -c -k --keepParent 恢复内置屏.app   "dist/恢复内置屏${SUFFIX}.zip"
+          mkdir staging
+          # 每个 app 一个 DMG（默认样式，app + Applications 链接）
+          for app in ClamOpen.app ClamRestore.app 恢复内置屏.app; do
+            name="$(basename "$app" .app)"
+            mkdir "staging/$name"
+            cp -R "$app" "staging/$name/"
+            ln -s /Applications "staging/$name/Applications"
+            hdiutil create -volname "$name" -srcfolder "staging/$name" \
+              -format UDZO -ov "dist/$name${SUFFIX}.dmg"
+          done
+          # 一个 DMG 装 3 个 app
+          mkdir "staging/ClamOpen-Suite"
+          cp -R ClamOpen.app ClamRestore.app 恢复内置屏.app "staging/ClamOpen-Suite/"
+          ln -s /Applications "staging/ClamOpen-Suite/Applications"
+          hdiutil create -volname "ClamOpen Suite" -srcfolder "staging/ClamOpen-Suite" \
+            -format UDZO -ov "dist/ClamOpen-Suite${SUFFIX}.dmg"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClamOpen-apps-${{ matrix.arch }}
+          path: |
+            dist/*.zip
+            dist/*.dmg
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Check artifacts
+        run: ls -la dist/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.dmg
+          generate_release_notes: true

@@ -98,12 +98,33 @@ Any one of these brings the internal display back:
 > Tested: with the main app *not running*, launching the Restore app alone brings a disabled internal
 > display back to active.
 
+## Install
+
+Grab the latest build from the [Releases](https://github.com/cs0tony/clamOpen/releases) page, then drag **both**
+`ClamOpen.app` and `恢复内置屏.app` ("Restore Internal Display") into `/Applications`. Putting the Restore
+app there lets Spotlight find it when the screen is black — strongly recommended.
+
+Optionally enable launch at login: System Settings → General → Login Items → add `ClamOpen.app`.
+
+### ⚠️ First launch notice
+
+> [!IMPORTANT]
+> If macOS blocks the app on first launch (app is damaged / cannot verify the developer), do this once:
+>
+> 1. Open **System Settings → Privacy & Security**.
+> 2. Scroll to the bottom, to the **Security** section.
+> 3. Under *"Allow applications downloaded from"*, you should see a message that `ClamOpen.app` was
+>    blocked, with an **Allow Anyway** button — click it, then authenticate with your password or Touch ID.
+> 4. Launch the app again and confirm **Open**.
+>
+> Do this for both apps. After the first approval, it won't ask again.
+
 ## Build from source
 
 Requirements: macOS 12+, Xcode / Swift 5.9+.
 
 ```bash
-git clone https://github.com/Attiv/clamOpen.git
+git clone https://github.com/cs0tony/clamOpen.git
 cd clamOpen
 ./build_app.sh        # generates icons, builds, and packages both apps
 ```
@@ -115,13 +136,11 @@ This produces:
 
 Or just compile the binaries: `swift build -c release`
 
-## Install
+### Install your build
 
-Drag **both** `ClamOpen.app` and `恢复内置屏.app` into `/Applications`. Putting the Restore app there
-lets Spotlight find it when the screen is black (strongly recommended). First launch may be blocked by
-Gatekeeper (local ad-hoc signature) — right-click → **Open**.
-
-Launch at login: System Settings → General → Login Items → add `ClamOpen.app`.
+Drag **both** `ClamOpen.app` and `恢复内置屏.app` into `/Applications` (same as above). First launch may
+be blocked by Gatekeeper (local ad-hoc signature) — follow the
+[First launch notice](#️-first-launch-notice) above, or right-click the app → **Open**.
 
 ## Usage
 
